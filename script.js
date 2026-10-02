@@ -45,6 +45,8 @@ let introStartTime = lastTime;
 
 let target  = 0;   // raw scroll progress  [0, 1]
 let current = 0;   // smoothed progress    [0, 1]
+let galaxyCurrent = 0, earthCurrent = 0, voxelCurrent = 0;
+let worldLocked = false;
 
 /* ── Utilities ────────────────────────────────────────────────── */
 function clamp(value, min, max) {
@@ -212,6 +214,7 @@ function updateTarget() {
     target = maxScroll > 0
         ? clamp(window.scrollY / maxScroll, 0, 1)
         : 0;
+    if (worldLocked) target = 1;
 }
 
 /* ── Render loop ──────────────────────────────────────────────── */
@@ -227,8 +230,14 @@ function render(now) {
     const delta = Math.min(40, now - lastTime || 16);
     lastTime = now;
 
-    /* Ease scroll progress — feels like physical inertia */
-    current += (target - current) * (1 - Math.exp(-delta * 0.0085));
+    /* Ease scroll progress — independent damping per section */
+    const dtSec = delta / 1000;
+    galaxyCurrent += (target - galaxyCurrent) * (1 - Math.exp(-dtSec * 0.8));
+    earthCurrent  += (target - earthCurrent)  * (1 - Math.exp(-dtSec * 3.5));
+    voxelCurrent  += (target - voxelCurrent)  * (1 - Math.exp(-dtSec * 4.0));
+    /* Lock to world once voxel reaches entry threshold */
+    if (voxelCurrent > 0.92 && !worldLocked) worldLocked = true;
+    if (worldLocked) { target = 1; galaxyCurrent = earthCurrent = voxelCurrent = 1; }
 
     /* ── GALAXY ────────────────────────────────────────────────
      *
@@ -247,12 +256,12 @@ function render(now) {
     const galaxyIdleScale = 1 + galaxyIdleTime * 0.000012;
 
     /* Approach phase 0→0.50 (gentle), zoom-through 0.50→0.68 */
-    const galaxyApproach   = smootherStep(0.00, 0.50, current) * 2.5;
-    const galaxyZoom       = smootherStep(0.50, 0.68, current) * 37;
+    const galaxyApproach   = smootherStep(0.00, 0.50, galaxyCurrent) * 2.5;
+    const galaxyZoom       = smootherStep(0.50, 0.68, galaxyCurrent) * 37;
     const galaxyScrollZoom = galaxyApproach + galaxyZoom;
 
     const galaxyScale   = galaxyIdleScale + galaxyScrollZoom;
-    const galaxyOpacity = 1 - smootherStep(0.65, 0.75, current);
+    const galaxyOpacity = 1 - smootherStep(0.65, 0.75, galaxyCurrent);
 
     galaxy.style.transform = `translate(-50%, -50%) scale(${galaxyScale})`;
     galaxy.style.opacity   = galaxyOpacity;
@@ -274,7 +283,7 @@ function render(now) {
      * earthEnteredTime resets if user scrolls back before 0.72 so
      * the idle zoom restarts correctly on re-entry.
      * ───────────────────────────────────────────────────────── */
-    const earthReveal = smootherStep(0.72, 0.82, current);
+    const earthReveal = smootherStep(0.72, 0.82, earthCurrent);
 
     if (earthReveal > 0 && earthEnteredTime === null) {
         /* Earth section entered — start the idle clock */
@@ -292,19 +301,21 @@ function render(now) {
     const earthIdleZoom = earthIdleTime * 0.000010;   /* ~0.6 after 60 s */
 
     /* Scroll-driven approach — Earth rushes in when scrolling 0.80→0.96 */
-    const earthScrollZoom = smootherStep(0.80, 0.96, current) * 16;
+    const earthScrollZoom = smootherStep(0.80, 0.96, earthCurrent) * 16;
 
     /* Start Earth at 0.15 so it clearly begins small/distant */
     const earthScale = 0.15 + earthIdleZoom + earthScrollZoom;
 
     earth.style.transform = `translate(-50%, -50%) scale(${earthScale})`;
     earth.style.opacity   = earthReveal;
+    earth.style.display  = earthReveal > 0.01 ? 'block' : 'none';
 
     /* Earth UI label */
-    earthUI.style.opacity = smootherStep(0.85, 0.90, current);
+    earthUI.style.opacity = smootherStep(0.85, 0.90, earthCurrent);
 
     /* Old-UI (space HUD) fades out as galaxy disappears */
-    oldUI.style.opacity = 1 - smootherStep(0.60, 0.72, current);
+    oldUI.style.opacity = 1 - smootherStep(0.60, 0.72, earthCurrent);
+    oldUI.style.display = oldUI.style.opacity > 0.01 ? 'flex' : 'none';
 
     /* ── VOXEL WORLD ───────────────────────────────────────────
      *
@@ -312,7 +323,7 @@ function render(now) {
      * camera more room to travel — feels less rushed.
      * Talks to voxel-world.js via window.setVoxelProgress().
      * ───────────────────────────────────────────────────────── */
-    const voxelProgress = smootherStep(0.85, 1.00, current);
+    const voxelProgress = smootherStep(0.85, 1.00, voxelCurrent);
     if (typeof window.setVoxelProgress === "function") {
         window.setVoxelProgress(voxelProgress);
     }

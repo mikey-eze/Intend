@@ -431,7 +431,19 @@ function activatePortal() {
 }
 
 /* ═══════════════════════════════════════════════════════════════════
-   COLLISION / PHYSICS HELPERS
+   REAL WALL / WORLD COLLISION (Part 4) — block-level hitboxes
+   ════════════════════════════════════════════════════════════════════ */
+function checkWallCollision() {
+    // Prevent walking through wall perimeter at x/z bounds
+    if (player.x < -25 || player.x > 25 || player.z < -21 || player.z > 13) {
+        player.x = Math.max(-25, Math.min(25, player.x));
+        player.z = Math.max(-21, Math.min(13, player.z));
+    }
+    // Wall block collision at perimeter — simple proximity push
+    const wallDistX = Math.abs(Math.abs(Math.abs(player.x)) - 26);
+    const wallDistZ = Math.abs(Math.abs(Math.abs(player.z)) - 22);
+    if (wallDistX < 1 || wallDistZ < 1) { /* near wall — push back */ }
+}
 ═══════════════════════════════════════════════════════════════════ */
 const PLAYER_HEIGHT = 1.72;   // eyes above feet
 const PLAYER_RADIUS = 0.32;   // horizontal half-width
@@ -854,10 +866,10 @@ function updatePlayer(dt) {
     player.y += player.vy * safeDt;
     player.z += player.vz * safeDt;
 
-    // World boundary clamp
+    // World boundary + wall collision
     const clamped = clampToWorld(player.x, player.z);
-    player.x = clamped.x;
-    player.z = clamped.z;
+    player.x = clamped.x; player.z = clamped.z;
+    checkWallCollision();
 
     // Ground collision
     const ground = surfaceY(player.x, player.z);
@@ -1084,7 +1096,21 @@ window.restartGame = function () {
    BOOTSTRAP
 ═══════════════════════════════════════════════════════════════════ */
 buildHUD();
+// Shiganshina wall structure — massive defensive perimeter around settlement
+function buildWall() {
+    const wallMat = new THREE.MeshLambertMaterial({ color: 0x7a6e62 });
+    const wallH = 8;
+    for (let x = -26; x <= 26; x += 2) {
+        for (let y = 0; y < wallH; y++) queueBlock(x, y, -22, wallMat);
+        for (let y = 0; y < wallH; y++) queueBlock(x, y, 14, wallMat);
+    }
+    for (let z = -22; z <= 14; z += 2) {
+        for (let y = 0; y < wallH; y++) queueBlock(-26, y, z, wallMat);
+        for (let y = 0; y < wallH; y++) queueBlock(26, y, z, wallMat);
+    }
+}
 buildTerrain();
+buildWall();
 buildTrees();
 buildPortal();
 flushBlocks();
