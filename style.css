@@ -1,0 +1,278 @@
+@import url('https://fonts.googleapis.com/css2?family=VT323&display=swap');
+
+* { box-sizing: border-box; }
+
+html, body {
+    margin: 0;
+    width: 100%;
+    /* 400vh gives enough scroll room for the full space→galaxy→earth→voxel journey */
+    min-height: 400vh;
+    background: #020104;
+    overflow-x: hidden;
+}
+
+body {
+    font-family: "VT323", "Courier New", monospace;
+    color: #b8c6ae;
+    image-rendering: pixelated;
+}
+
+/* Fixed scene — everything happens here */
+.scene {
+    position: fixed;
+    inset: 0;
+    overflow: hidden;
+    background:
+        radial-gradient(circle at 50% 48%, #10051d 0%, #050208 48%, #010102 100%);
+}
+
+/* =========================================================
+   SPACE-DUST CANVAS — layer 1 (bottom)
+   ========================================================= */
+#space-dust {
+    position: absolute;
+    inset: 0;
+    z-index: 1;
+    pointer-events: none;
+}
+
+/* =========================================================
+   GALAXY — layer 2
+   ========================================================= */
+.galaxy {
+    position: absolute;
+    left: 50%;
+    top: 50%;
+
+    width: min(72vw, 900px);
+    height: min(72vw, 900px);
+
+    object-fit: contain;
+
+    transform: translate(-50%, -50%) scale(.72);
+    transform-origin: center;
+
+    /*
+       mix-blend-mode: screen blends the black background of the JPG away
+       so only the galaxy light shows on top of star field.
+    */
+    mix-blend-mode: screen;
+
+    z-index: 2;
+    opacity: 1;
+    will-change: transform, opacity;
+}
+
+/* =========================================================
+   EARTH — layer 10 (above stars, below voxel)
+   NO mix-blend-mode — Earth must be visually solid.
+   ========================================================= */
+.earth {
+    position: absolute;
+    left: 50%;
+    top: 50%;
+
+    width: min(44vw, 640px);
+    height: min(44vw, 640px);
+
+    object-fit: contain;
+
+    transform: translate(-50%, -50%) scale(1);
+    transform-origin: center;
+
+    opacity: 0;
+
+    /* Solid Earth — no blend mode that would let stars show through */
+    z-index: 10;
+    will-change: opacity, transform;
+}
+
+/* =========================================================
+   VOXEL WORLD — layer 15 (above Earth, below CRT+HUD)
+   ========================================================= */
+#voxel-world {
+    position: absolute;
+    inset: 0;
+    z-index: 15;
+    opacity: 0;
+    pointer-events: none;
+    will-change: opacity;
+}
+
+#voxel-canvas {
+    display: block;
+    width: 100%;
+    height: 100%;
+}
+
+/* =========================================================
+   HUD TEXT — layer 20
+   ========================================================= */
+.old-ui,
+.earth-ui {
+    position: absolute;
+    z-index: 20;
+
+    font-family: "VT323", "Courier New", monospace;
+    font-size: 19px;
+    letter-spacing: 1px;
+
+    color: #8f9d89;
+    text-shadow: 0 0 3px rgba(180, 200, 170, .18);
+
+    pointer-events: none;
+}
+
+.old-ui {
+    left: 24px;
+    bottom: 20px;
+
+    display: flex;
+    gap: 25px;
+}
+
+.earth-ui {
+    right: 30px;
+    bottom: 20px;
+
+    opacity: 0;
+    will-change: opacity;
+}
+
+.earth-ui div:last-child {
+    color: #697366;
+    margin-top: 3px;
+}
+
+/* =========================================================
+   CRT SCANLINE OVERLAY — layer 25 (very top)
+   ========================================================= */
+.crt {
+    position: absolute;
+    inset: 0;
+    z-index: 25;
+    pointer-events: none;
+
+    opacity: .08;
+
+    background:
+        repeating-linear-gradient(
+            to bottom,
+            transparent 0,
+            transparent 3px,
+            rgba(255,255,255,.12) 4px
+        );
+
+    box-shadow:
+        inset 0 0 120px rgba(0,0,0,.85);
+}
+
+/* =========================================================
+   ORIGINAL INTENDOS-STYLE FORWARD STAR DUST
+   The CSS star layers (.stars-*) are hidden — the forward
+   stardust is handled entirely by the <canvas> in script.js.
+   ========================================================= */
+.stars-far,
+.stars-near,
+.stars-fast {
+    display: none !important;
+}
+
+/* =========================================================
+   GAME HUD — retro terminal overlay (layer above voxel)
+   ========================================================= */
+#game-hud {
+    position: absolute;
+    z-index: 30;
+    pointer-events: none;
+    font-family: "VT323", "Courier New", monospace;
+    color: #b8c6ae;
+    letter-spacing: 1.5px;
+    text-shadow: 0 0 4px rgba(140, 190, 160, .25);
+}
+#hud-header {
+    font-size: 22px;
+    color: #a0bfa6;
+    text-shadow: 0 0 6px rgba(150, 200, 160, .35);
+}
+#hud-shards {
+    font-size: 20px;
+    margin-top: 2px;
+}
+#hud-objective {
+    font-size: 15px;
+    color: #6a7a65;
+    margin-top: 4px;
+}
+#hud-controls {
+    font-size: 12px;
+    color: #5a6a55;
+    margin-top: 4px;
+}
+
+#lock-prompt {
+    position: absolute;
+    z-index: 30;
+    top: 50%; left: 50%;
+    transform: translate(-50%, -50%);
+    font-family: "VT323", "Courier New", monospace;
+    font-size: 28px;
+    color: #b8c6ae;
+    text-shadow: 0 0 8px rgba(140, 190, 160, .5);
+    pointer-events: none;
+    letter-spacing: 3px;
+}
+
+#mission-complete {
+    position: absolute;
+    z-index: 35;
+    inset: 0;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    background: rgba(1, 2, 6, 0.88);
+    font-family: "VT323", "Courier New", monospace;
+    color: #b8c6ae;
+    text-align: center;
+}
+#mc-title {
+    font-size: 48px;
+    letter-spacing: 6px;
+    text-shadow: 0 0 12px rgba(180, 210, 160, .45);
+    color: #c0e0c0;
+}
+#mc-sub {
+    font-size: 24px;
+    margin-top: 12px;
+    color: #8fa98a;
+    letter-spacing: 3px;
+}
+#mc-restart {
+    margin-top: 28px;
+    font-size: 18px;
+    color: #6a8a75;
+    cursor: pointer;
+    letter-spacing: 2px;
+}
+#mc-restart:hover { color: #a0cfa8; }
+
+/* =========================================================
+   RESPONSIVE
+   ========================================================= */
+@media (max-width: 700px) {
+    .galaxy {
+        width: 110vw;
+        height: 110vw;
+    }
+
+    .earth {
+        width: 60vw;
+        height: 60vw;
+    }
+
+    .old-ui,
+    .earth-ui {
+        font-size: 15px;
+    }
+}

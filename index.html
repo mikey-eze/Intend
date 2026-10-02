@@ -1,0 +1,47 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SAIF.OS</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <main class="scene">
+        <!-- Star / space dust canvas — always behind everything -->
+        <canvas id="space-dust" aria-hidden="true"></canvas>
+
+        <!-- Galaxy image -->
+        <img class="galaxy" src="assets/galaxy.jpg" alt="Pixel galaxy">
+
+        <!-- Earth image — z-index above stars, below voxel -->
+        <img class="earth" src="assets/earth-new.png" alt="Pixel Earth">
+
+        <!-- Voxel world overlay — fades in over Earth -->
+        <div id="voxel-world" aria-hidden="true">
+            <canvas id="voxel-canvas"></canvas>
+        </div>
+
+        <!-- HUD text — space section -->
+        <div class="old-ui">
+            <div>SAIF_OS // 01</div>
+            <div>SCROLL TO ENTER</div>
+        </div>
+
+        <!-- HUD text — Earth section -->
+        <div class="earth-ui">
+            <div>EARTH // 001</div>
+            <div>CONNECTION ESTABLISHED</div>
+        </div>
+
+        <!-- CRT scanline overlay — always on top of everything except UI -->
+        <div class="crt"></div>
+    </main>
+
+    <!-- Space / Earth / scroll controller -->
+    <script src="script.js"></script>
+
+    <!-- Voxel world (Three.js ES module) — loaded after script.js sets up the scroll system -->
+    <script type="module" src="voxel-world.js"></script>
+</body>
+</html>
