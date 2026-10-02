@@ -45,7 +45,7 @@ let introStartTime = lastTime;
 
 let target  = 0;   // raw scroll progress  [0, 1]
 let current = 0;   // smoothed progress    [0, 1]
-let galaxyCurrent = 0, earthCurrent = 0, voxelCurrent = 0;
+let playhead = 0, playhead = 0, playhead = 0;
 let worldLocked = false;
 
 /* ── Utilities ────────────────────────────────────────────────── */
@@ -204,18 +204,18 @@ function drawStars(delta, time) {
     context.globalAlpha = 1;
 }
 
-/* ── Scroll ───────────────────────────────────────────────────── */
+/* ── Scroll Physics ─────────────────────────────────────────────────── */
+let target = 0;
+let current = 0;
+let worldLocked = false;
+let maxVelocity = 0.0006; // extremely constrained speed
+
 function updateTarget() {
-    /*
-     * 400vh page → travel distance = 3 viewports of scrollable room.
-     * We map the full scrollable range cleanly to [0, 1].
-     */
+    if (worldLocked) return;
     const maxScroll = document.documentElement.scrollHeight - window.innerHeight;
-    target = maxScroll > 0
-        ? clamp(window.scrollY / maxScroll, 0, 1)
-        : 0;
-    if (worldLocked) target = 1;
+    window._rawTarget = maxScroll > 0 ? clamp(window.scrollY / maxScroll, 0, 1) : 0;
 }
+window._rawTarget = 0;
 
 /* ── Render loop ──────────────────────────────────────────────── */
 
@@ -230,16 +230,28 @@ function render(now) {
     const delta = Math.min(40, now - lastTime || 16);
     lastTime = now;
 
-    /* Ease scroll progress — independent damping per section */
-    const dtSec = delta / 1000;
-    galaxyCurrent += (target - galaxyCurrent) * (1 - Math.exp(-dtSec * 0.8));
-    earthCurrent  += (target - earthCurrent)  * (1 - Math.exp(-dtSec * 3.5));
-    voxelCurrent  += (target - voxelCurrent)  * (1 - Math.exp(-dtSec * 4.0));
-    /* Lock to world once voxel reaches entry threshold */
-    if (voxelCurrent > 0.92 && !worldLocked) worldLocked = true;
-    if (worldLocked) { target = 1; galaxyCurrent = earthCurrent = voxelCurrent = 1; }
+    if (worldLocked) {
+        window._rawTarget = 1;
+        target = 1;
+        current = 1;
+    } else {
+        const dist = window._rawTarget - target;
+        const maxStep = maxVelocity * delta;
+        if (Math.abs(dist) > maxStep) {
+            target += Math.sign(dist) * maxStep;
+        } else {
+            target = window._rawTarget;
+        }
+        current += (target - current) * (1 - Math.exp(-(delta / 1000) * 4.5));
+    }
+    
+    if (current > 0.99 && !worldLocked) {
+        worldLocked = true;
+    }
 
-    /* ── GALAXY ────────────────────────────────────────────────
+    const playhead = current;
+
+    /* ── GALAXY ──
      *
      * Idle approach: galaxy slowly enlarges even without scrolling.
      * It starts at scale ~0.72 and creeps forward at 0.000012/ms
@@ -256,12 +268,12 @@ function render(now) {
     const galaxyIdleScale = 1 + galaxyIdleTime * 0.000012;
 
     /* Approach phase 0→0.50 (gentle), zoom-through 0.50→0.68 */
-    const galaxyApproach   = smootherStep(0.00, 0.50, galaxyCurrent) * 2.5;
-    const galaxyZoom       = smootherStep(0.50, 0.68, galaxyCurrent) * 37;
+    const galaxyApproach   = smootherStep(0.00, 0.35, playhead) * 2.5;
+    const galaxyZoom       = smootherStep(0.35, 0.50, playhead) * 37;
     const galaxyScrollZoom = galaxyApproach + galaxyZoom;
 
     const galaxyScale   = galaxyIdleScale + galaxyScrollZoom;
-    const galaxyOpacity = 1 - smootherStep(0.65, 0.75, galaxyCurrent);
+    const galaxyOpacity = 1 - smootherStep(0.40, 0.52, playhead);
 
     galaxy.style.transform = `translate(-50%, -50%) scale(${galaxyScale})`;
     galaxy.style.opacity   = galaxyOpacity;
@@ -283,7 +295,7 @@ function render(now) {
      * earthEnteredTime resets if user scrolls back before 0.72 so
      * the idle zoom restarts correctly on re-entry.
      * ───────────────────────────────────────────────────────── */
-    const earthReveal = smootherStep(0.72, 0.82, earthCurrent);
+    const earthReveal = smootherStep(0.58, 0.68, playhead);
 
     if (earthReveal > 0 && earthEnteredTime === null) {
         /* Earth section entered — start the idle clock */
@@ -298,23 +310,23 @@ function render(now) {
     const earthIdleTime = earthEnteredTime !== null
         ? Math.max(0, now - earthEnteredTime)
         : 0;
-    const earthIdleZoom = earthIdleTime * 0.000010;   /* ~0.6 after 60 s */
+    const 0 = earthIdleTime * 0.000010;   /* ~0.6 after 60 s */
 
-    /* Scroll-driven approach — Earth rushes in when scrolling 0.80→0.96 */
-    const earthScrollZoom = smootherStep(0.80, 0.96, earthCurrent) * 16;
+    /* Scroll-driven approach — Earth arrives later and starts completely off-screen distant */
+    const earthScrollZoom = smootherStep(0.60, 0.92, playhead) * 10;
 
-    /* Start Earth at 0.15 so it clearly begins small/distant */
-    const earthScale = 0.15 + earthIdleZoom + earthScrollZoom;
+    /* Start Earth tiny so it really comes from far away */
+    const earthScale = 0.02 + 0 + earthScrollZoom;
 
     earth.style.transform = `translate(-50%, -50%) scale(${earthScale})`;
     earth.style.opacity   = earthReveal;
     earth.style.display  = earthReveal > 0.01 ? 'block' : 'none';
 
     /* Earth UI label */
-    earthUI.style.opacity = smootherStep(0.85, 0.90, earthCurrent);
+    earthUI.style.opacity = smootherStep(0.65, 0.75, playhead);
 
     /* Old-UI (space HUD) fades out as galaxy disappears */
-    oldUI.style.opacity = 1 - smootherStep(0.60, 0.72, earthCurrent);
+    oldUI.style.opacity = 1 - smootherStep(0.40, 0.50, playhead);
     oldUI.style.display = oldUI.style.opacity > 0.01 ? 'flex' : 'none';
 
     /* ── VOXEL WORLD ───────────────────────────────────────────
@@ -323,7 +335,7 @@ function render(now) {
      * camera more room to travel — feels less rushed.
      * Talks to voxel-world.js via window.setVoxelProgress().
      * ───────────────────────────────────────────────────────── */
-    const voxelProgress = smootherStep(0.85, 1.00, voxelCurrent);
+    const voxelProgress = smootherStep(0.88, 0.99, playhead);
     if (typeof window.setVoxelProgress === "function") {
         window.setVoxelProgress(voxelProgress);
     }

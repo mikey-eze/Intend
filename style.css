@@ -5,8 +5,8 @@
 html, body {
     margin: 0;
     width: 100%;
-    /* 400vh gives enough scroll room for the full space→galaxy→earth→voxel journey */
-    min-height: 400vh;
+    /* Minimum 1200vh ensures the user has huge amounts of physical scroll wheel space to observe cinematic approaches */
+    min-height: 1200vh;
     background: #020104;
     overflow-x: hidden;
 }
