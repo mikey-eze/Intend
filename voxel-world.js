@@ -101,6 +101,15 @@ const heightCache = new Map();
 // All solid block world positions for collision  (Set of "x,y,z")
 const solidSet = new Set();
 
+/*
+ * Blocks the player must NOT be able to step onto. Terrain forms natural
+ * single-block steps that should be walkable, but tree trunks, walls, houses
+ * and towers are obstacles — a 1-block step-up onto any of them let the
+ * player climb straight over a tree trunk or the district wall. Keyed the
+ * same way as solidSet.
+ */
+const noStepSet = new Set();
+
 /* ═══════════════════════════════════════════════════════════════════
    NOISE / TERRAIN
 ═══════════════════════════════════════════════════════════════════ */
@@ -146,12 +155,15 @@ function groundY(x, z) {
  */
 const instanceQueues = new Map(); // mat key → [{x,y,z}]
 
-function queueBlock(x, y, z, mat) {
+function queueBlock(x, y, z, mat, noStep = false) {
     const key = mat.uuid;
     if (!instanceQueues.has(key)) instanceQueues.set(key, { mat, positions: [] });
     instanceQueues.get(key).positions.push({ x, y, z });
+    const bkey = `${Math.round(x)},${Math.round(y)},${Math.round(z)}`;
     // register in solid set
-    solidSet.add(`${Math.round(x)},${Math.round(y)},${Math.round(z)}`);
+    solidSet.add(bkey);
+    // Mark structural blocks the player cannot step onto
+    if (noStep) noStepSet.add(bkey);
 }
 
 // Objects we need to animate (shards, portal particles, etc.)
@@ -230,7 +242,7 @@ function buildTrees() {
     for (const { x, z, h } of treeCandidates) {
         const trunkH = 3 + Math.floor(Math.abs(Math.sin(x * 2.1 + z)) * 2);
         for (let y = 0; y < trunkH; y++) {
-            queueBlock(x, h + y, z, MAT.wood);
+            queueBlock(x, h + y, z, MAT.wood, true);   // trunk = no step
         }
         // Leaf crown
         const crownBase = h + trunkH - 1;
@@ -433,19 +445,149 @@ function activatePortal() {
 /* ═══════════════════════════════════════════════════════════════════
    REAL WALL / WORLD COLLISION (Part 4) — block-level hitboxes
    ════════════════════════════════════════════════════════════════════ */
-function checkWallCollision() {
-    // Prevent walking through wall perimeter at x/z bounds
-    if (player.x < -25 || player.x > 25 || player.z < -21 || player.z > 13) {
-        player.x = Math.max(-25, Math.min(25, player.x));
-        player.z = Math.max(-21, Math.min(13, player.z));
-    }
-    // Wall block collision at perimeter — simple proximity push
-    const wallDistX = Math.abs(Math.abs(Math.abs(player.x)) - 26);
-    const wallDistZ = Math.abs(Math.abs(Math.abs(player.z)) - 22);
-    if (wallDistX < 1 || wallDistZ < 1) { /* near wall — push back */ }
+/*
+   The old checkWallCollision() had an empty if-body — it computed wall
+   distances and then did nothing with them, so the player walked straight
+   through the wall, the houses and the trees. Collision now resolves the
+   player box against the same `solidSet` the world was built into, one axis
+   at a time so sliding along a wall works instead of sticking.
+*/
+function isSolid(x, y, z) {
+    return solidSet.has(`${x},${y},${z}`);
 }
-═══════════════════════════════════════════════════════════════════ */
-const PLAYER_HEIGHT = 1.72;   // eyes above feet
+
+/** True if the player box at (x, feetY, z) overlaps any solid block. */
+function boxHitsSolid(x, feetY, z) {
+    const minX = Math.floor(x - PLAYER_RADIUS + 0.5);
+    const maxX = Math.floor(x + PLAYER_RADIUS + 0.5);
+    const minZ = Math.floor(z - PLAYER_RADIUS + 0.5);
+    const maxZ = Math.floor(z + PLAYER_RADIUS + 0.5);
+    const minY = Math.floor(feetY + 0.5);
+    const maxY = Math.floor(feetY + PLAYER_HEIGHT - 0.5);
+
+    for (let bx = minX; bx <= maxX; bx++) {
+        for (let bz = minZ; bz <= maxZ; bz++) {
+            for (let by = minY; by <= maxY; by++) {
+                if (isSolid(bx, by, bz)) return true;
+            }
+        }
+    }
+    return false;
+}
+
+/**
+ * Topmost solid surface under the player, searching down from their feet.
+ * Returns -Infinity over a void. This is what lets the player stand on
+ * terrain, roofs and tree canopy — the raw heightmap knows nothing about
+ * buildings, so using it alone made the player walk through floors.
+ */
+function groundBelow(x, feetY, z, maxDrop = 4) {
+    const startY = Math.floor(feetY + 0.5);
+    const minX = Math.floor(x - PLAYER_RADIUS + 0.5);
+    const maxX = Math.floor(x + PLAYER_RADIUS + 0.5);
+    const minZ = Math.floor(z - PLAYER_RADIUS + 0.5);
+    const maxZ = Math.floor(z + PLAYER_RADIUS + 0.5);
+
+    for (let by = startY; by >= startY - maxDrop; by--) {
+        for (let bx = minX; bx <= maxX; bx++) {
+            for (let bz = minZ; bz <= maxZ; bz++) {
+                if (isSolid(bx, by, bz)) return by + 0.5;
+            }
+        }
+    }
+    return -Infinity;
+}
+
+/** Resolves horizontal movement against solids, one axis at a time. */
+function resolveHorizontal(x, feetY, z, dx, dz) {
+    let nx = x;
+    let nz = z;
+    let stepUp = 0;
+
+    /*
+     * A single-block ledge is only climbable if it is TERRAIN.
+     *
+     * Tree trunks, the wall, houses and towers are registered in noStepSet.
+     * Without that check the player stepped up onto a 1-block trunk and
+     * walked straight over it — and could have done the same to the wall.
+     *
+     * The structural test looks at the block the player would STAND ON (the
+     * surface directly above the obstacle), not at an arbitrary band, so a
+     * trunk is rejected while a natural terrain step is accepted.
+     */
+    const canStepAt = (px, feetY2, pz) => {
+        if (boxHitsSolid(px, feetY2 + 1.02, pz)) return false;
+
+        // Height of the surface the player would land on.
+        const surf = groundBelow(px, feetY2 + 1.6, pz, 2);
+        if (surf === -Infinity) return false;
+
+        // Reject anything taller than a single step, and anything structural.
+        if (surf - feetY2 > 1.05) return false;
+
+        const topBlock = Math.floor(surf - 0.5 + 0.001);
+        const minX = Math.floor(px - PLAYER_RADIUS + 0.5);
+        const maxX = Math.floor(px + PLAYER_RADIUS + 0.5);
+        const minZ = Math.floor(pz - PLAYER_RADIUS + 0.5);
+        const maxZ = Math.floor(pz + PLAYER_RADIUS + 0.5);
+        for (let bx = minX; bx <= maxX; bx++) {
+            for (let bz = minZ; bz <= maxZ; bz++) {
+                if (noStepSet.has(`${bx},${topBlock},${bz}`)) return false;
+            }
+        }
+        return true;
+    };
+
+    /*
+     * `stepUp` is the exact lift needed to stand on the target surface, not a
+     * flat +1.0. Using a flat lift left the player half a block below the
+     * plateau, where the next frame's ground sweep pulled them back down and
+     * they could never finish the climb.
+     */
+    const liftFor = (px, feetY2, pz) => {
+        const surf = groundBelow(px, feetY2 + 1.6, pz, 2);
+        return surf === -Infinity ? 1.0 : Math.max(0, surf - feetY2);
+    };
+
+    if (dx !== 0) {
+        const tryX = nx + dx;
+        if (!boxHitsSolid(tryX, feetY, nz)) {
+            nx = tryX;
+        } else if (canStepAt(tryX, feetY, nz)) {
+            nx = tryX;
+            stepUp = liftFor(tryX, feetY, nz);
+        }
+    }
+
+    if (dz !== 0) {
+        const tryZ = nz + dz;
+        if (!boxHitsSolid(nx, feetY, tryZ)) {
+            nz = tryZ;
+        } else if (canStepAt(nx, feetY, tryZ)) {
+            nz = tryZ;
+            stepUp = liftFor(nx, feetY, tryZ);
+        }
+    }
+
+    return { x: nx, z: nz, stepUp };
+}
+
+/** Fixes a spawn that landed inside geometry. */
+function unstickFromSolid() {
+    if (!boxHitsSolid(player.x, player.y, player.z)) return;
+    for (let lift = 1; lift <= 8; lift++) {
+        if (!boxHitsSolid(player.x, player.y + lift, player.z)) {
+            player.y += lift;
+            return;
+        }
+    }
+    player.y = surfaceY(player.x, player.z);
+}
+
+/* ═══════════════════════════════════════════════════════════════════
+   PLAYER DIMENSIONS
+═════════════════════════════════════════════════════════════════════ */
+const PLAYER_HEIGHT = 1.72;   // full body height, feet -> crown
 const PLAYER_RADIUS = 0.32;   // horizontal half-width
 
 /**
@@ -458,28 +600,47 @@ function surfaceY(x, z) {
     return heightAt(bx, bz) - 0.5;  // top face of topmost block
 }
 
-/**
- * World boundary clamp — keeps player inside the terrain grid.
- */
-function clampToWorld(x, z) {
-    return {
-        x: Math.max(WORLD_X_MIN + 1, Math.min(WORLD_X_MAX - 1, x)),
-        z: Math.max(WORLD_Z_MIN + 1, Math.min(WORLD_Z_MAX - 1, z)),
-    };
-}
-
 /* ═══════════════════════════════════════════════════════════════════
    PLAYER STATE
 ═══════════════════════════════════════════════════════════════════ */
+/*
+ * Spawn point.
+ *
+ * The old spawn (0, 10) was not literally inside a solid, but it was unusable:
+ * the follow camera sits 3.6 units behind the player, so at yaw = PI it landed
+ * at (0, 5.5, 6.4) — inside the 5-storey tower buildHouse(-1, 5, 3, 3, 5). The
+ * opening view was a solid wall. The player box itself was also wedged in a
+ * 1-block gap between houses: 2.5 s of held movement in any direction moved it
+ * 0.157 units.
+ *
+ * (-14, -9) is an open street on the west side of the district, chosen by
+ * simulating the real collision/physics code over every column inside the wall
+ * and ranking on the WORST of 16 compass directions, not the average:
+ *   • player box clear, with headroom to jump apex
+ *   • follow camera clear at both 3.6 (walk) and 4.8 (sprint)
+ *   • walks at least 7.2 units in every one of 16 directions, zero penetration
+ *     (clear ground covers ~13.5 u in 2.5 s, so nothing is half-blocking)
+ *   • 5.0 units from the nearest house, nearest trunk 2.2 units
+ *
+ * A first candidate at (21, 8) was rejected by browser testing: it had the only
+ * clear sightline to Wall Maria, but a tree trunk 1.4 units west cut movement
+ * in that direction to 0.17 units — still "can't get out" to a player.
+ *
+ * Facing: yaw 0 looks down -Z, i.e. toward Wall Maria. The old code used
+ * yaw = PI, which faced the player at the *south* wall — away from the Titan
+ * event and against a row of houses.
+ */
+const SPAWN = { x: -14, y: 0, z: -9, yaw: 0 };
+
 const player = {
     // Position = feet position
-    x: 0, y: 0, z: 10,
+    x: SPAWN.x, y: SPAWN.y, z: SPAWN.z,
 
     // Velocity
     vx: 0, vy: 0, vz: 0,
 
     // Angles (radians)
-    yaw:   0,
+    yaw:   SPAWN.yaw,
     pitch: 0,
 
     grounded: false,
@@ -562,6 +723,7 @@ function triggerTitanEvent() {
     titanEvent.phase = 0;
     titanEvent.time = 0;
     titanMesh.visible = true;
+    updateHUD();
     console.log('COLOSSAL TITAN EVENT TRIGGERED');
 }
 
@@ -579,6 +741,7 @@ function updateTitanEvent(dt, time) {
 
         if (t > 3) {
             titanEvent.phase = 1;
+            updateHUD();
             playSound('portal'); // Deep roar
         }
     }
@@ -594,6 +757,7 @@ function updateTitanEvent(dt, time) {
 
         if (t > 8) {
             titanEvent.phase = 2;
+            updateHUD();
         }
     }
 
@@ -611,6 +775,7 @@ function updateTitanEvent(dt, time) {
 
         if (t > 10) {
             titanEvent.phase = 3;
+            updateHUD();
         }
     }
 
@@ -798,6 +963,7 @@ const keys = {
 let pointerLocked  = false;
 let gameActive     = false;   // true only once transition is fully done
 let missionComplete = false;
+let worldLocked    = false;   // journey is one-way; set by script.js
 
 /* ═══════════════════════════════════════════════════════════════════
    KEYBOARD
@@ -941,10 +1107,9 @@ function buildHUD() {
     const hud = document.createElement('div');
     hud.id = 'game-hud';
     hud.innerHTML = `
-<div id="hud-header">INTEND // FRONTIER</div>
-<div id="hud-shards">SHARDS <span id="shard-count">0</span> / ${TOTAL_SHARDS}</div>
-<div id="hud-objective">Explore the world. Find all energy shards.</div>
-<div id="hud-controls">W A S D · SHIFT · SPACE · ESC</div>
+<div id="hud-header">SHIGANSHINA // WALL MARIA</div>
+<div id="hud-objective">Explore the district. Stay alert.</div>
+<div id="hud-controls">W A S D · SHIFT · SPACE · MOUSE · ESC</div>
     `.trim();
     document.body.appendChild(hud);
 
@@ -983,15 +1148,28 @@ function setPromptVisible(v) {
 }
 
 function updateHUD() {
-    if (!shardCountEl) return;
-    shardCountEl.textContent = shardsCollected;
+    if (!objectiveEl) return;
 
-    if (shardsCollected === TOTAL_SHARDS) {
-        objectiveEl.textContent = 'All shards found. Reach the ancient portal.';
-    } else {
-        const remaining = TOTAL_SHARDS - shardsCollected;
-        objectiveEl.textContent = `Find ${remaining} more energy shard${remaining !== 1 ? 's' : ''}.`;
+    if (missionComplete) {
+        objectiveEl.textContent = 'DISTRICT SECURED.';
+        return;
     }
+
+    if (titanEvent.active) {
+        if (titanEvent.phase === 0) {
+            objectiveEl.textContent = 'WARNING // SOMETHING IS BEHIND THE WALL.';
+        } else if (titanEvent.phase === 1) {
+            objectiveEl.textContent = 'COLOSSAL TITAN // APPROACHING THE WALL.';
+        } else if (titanEvent.phase === 2) {
+            objectiveEl.textContent = 'WALL IMPACT // RUN.';
+        } else {
+            objectiveEl.textContent = 'SHIGANSHINA IS UNDER ATTACK.';
+        }
+    } else {
+        objectiveEl.textContent = 'Explore the district. Stay alert.';
+    }
+
+    if (shardCountEl) shardCountEl.style.display = 'none';
 }
 
 function showHUD() {
@@ -1111,19 +1289,28 @@ function checkPortalTrigger() {
    PLAYER PHYSICS UPDATE
 ═══════════════════════════════════════════════════════════════════ */
 function updatePlayer(dt) {
-    if (!pointerLocked || missionComplete) return;
+    if (missionComplete) return;
 
     // Clamp dt to avoid huge physics steps (e.g. tab switching)
     const safeDt = Math.min(dt, 0.1);
 
-    // Input direction in world space (yaw-rotated)
+    // Movement is gated on the game being ACTIVE, not on pointer lock.
+    //
+    // Pointer lock only controls MOUSE LOOK. Previously all movement required
+    // pointer lock too, which meant: pressing ESC to release the cursor also
+    // froze the player mid-stride, and if the browser ever refused a lock
+    // request the game became completely unplayable while looking fine.
+    // The player now always moves once the world is entered.
+    const canMove = gameActive;
     let moveX = 0, moveZ = 0;
     const speed = keys.shift ? SPRINT_SPEED : WALK_SPEED;
 
-    if (keys.w) { moveX -= Math.sin(player.yaw); moveZ -= Math.cos(player.yaw); }
-    if (keys.s) { moveX += Math.sin(player.yaw); moveZ += Math.cos(player.yaw); }
-    if (keys.a) { moveX -= Math.cos(player.yaw); moveZ += Math.sin(player.yaw); }
-    if (keys.d) { moveX += Math.cos(player.yaw); moveZ -= Math.sin(player.yaw); }
+    if (canMove) {
+        if (keys.w) { moveX -= Math.sin(player.yaw); moveZ -= Math.cos(player.yaw); }
+        if (keys.s) { moveX += Math.sin(player.yaw); moveZ += Math.cos(player.yaw); }
+        if (keys.a) { moveX -= Math.cos(player.yaw); moveZ += Math.sin(player.yaw); }
+        if (keys.d) { moveX += Math.cos(player.yaw); moveZ -= Math.sin(player.yaw); }
+    }
 
     const movingH = moveX !== 0 || moveZ !== 0;
 
@@ -1144,7 +1331,7 @@ function updatePlayer(dt) {
     player.vy += GRAVITY * safeDt;
 
     // Jump
-    if (keys.space && player.grounded && !player.jumping) {
+    if (canMove && keys.space && player.grounded && !player.jumping) {
         player.vy = JUMP_VEL;
         player.grounded = false;
         player.jumping  = true;
@@ -1152,24 +1339,61 @@ function updatePlayer(dt) {
     }
     if (!keys.space) player.jumping = false;
 
-    // Integrate position
-    player.x += player.vx * safeDt;
+    /* ── HORIZONTAL, resolved against real solid blocks ── */
+    const feetY = player.y;
+    const resolved = resolveHorizontal(
+        player.x, feetY, player.z,
+        player.vx * safeDt, player.vz * safeDt
+    );
+
+    // If a step-up happened, lift the body onto the ledge.
+    if (resolved.stepUp > 0) {
+        player.y += resolved.stepUp;
+    }
+
+    player.x = resolved.x;
+    player.z = resolved.z;
+
+    // Kill velocity into the surface we just hit, so we don't build up
+    // momentum against a wall and shoot off when it clears.
+    if (boxHitsSolid(player.x + player.vx * safeDt, player.y, player.z)) player.vx = 0;
+    if (boxHitsSolid(player.x, player.y, player.z + player.vz * safeDt)) player.vz = 0;
+
+    // Map boundaries — the district interior is a hard physical bound.
+    const clamped = clampToDistrict();
+    if (clamped.x !== player.x) player.vx = 0;
+    if (clamped.z !== player.z) player.vz = 0;
+    player.x = clamped.x;
+    player.z = clamped.z;
+
+    /* ── VERTICAL ──
+       Sweep down onto the topmost solid under the feet. This includes
+       building roofs and terrain, so the player cannot sink into the ground
+       or fall through a floor. */
     player.y += player.vy * safeDt;
-    player.z += player.vz * safeDt;
 
-    // World boundary + wall collision
-    const clamped = clampToWorld(player.x, player.z);
-    player.x = clamped.x; player.z = clamped.z;
-    checkWallCollision();
+    const support = groundBelow(player.x, player.y, player.z, 4);
 
-    // Ground collision
-    const ground = surfaceY(player.x, player.z);
-    if (player.y <= ground) {
-        player.y = ground;
+    if (player.vy <= 0 && support !== -Infinity && player.y <= support) {
+        player.y = support;
         player.vy = 0;
         player.grounded = true;
+    } else if (player.vy > 0) {
+        // Rising — check head clearance so we don't jump through a ceiling.
+        if (boxHitsSolid(player.x, player.y, player.z)) {
+            player.vy = 0;
+        }
+        player.grounded = false;
     } else {
         player.grounded = false;
+    }
+
+    // Falling out of the world (shouldn't happen inside the wall, but the
+    // map has corners) — recover rather than falling forever.
+    if (player.y < -12) {
+        player.y = surfaceY(player.x, player.z);
+        player.vy = 0;
+        player.grounded = true;
     }
 }
 
@@ -1302,7 +1526,7 @@ function updateAnimated(time, dt) {
     // Titan event
     if (gameActive && !titanEvent.active) {
         titanTriggerTimer += dt;
-        if (titanTriggerTimer > 8) {
+        if (titanTriggerTimer > 6) {
             triggerTitanEvent();
         }
     }
@@ -1314,7 +1538,9 @@ function updateAnimated(time, dt) {
    SCROLL-DRIVEN INTRO CAMERA (before game activates)
 ═══════════════════════════════════════════════════════════════════ */
 const CAM_START = { x: 0, y: 7,   z: 25 };
-const CAM_END   = { x: 0, y: PLAYER_HEIGHT + 0.5, z: 10 };
+/* Ends behind the spawn, where the third-person follow camera will take over,
+   so entry does not sweep in from a stale position. */
+const CAM_END   = { x: SPAWN.x, y: PLAYER_HEIGHT + 0.5, z: SPAWN.z + 3.6 };
 
 let scrollProgress = 0;
 let introComplete  = false;
@@ -1326,16 +1552,29 @@ window.setVoxelProgress = function (value) {
     worldOverlay.style.opacity       = String(scrollProgress);
     worldOverlay.style.pointerEvents = scrollProgress > 0.98 ? 'auto' : 'none';
 
-    // Block visibility
-    // (Instanced meshes are always visible; we set them once)
-    // Only hide before transition starts
+    // Hide the space scene once the world is opaque enough to cover it.
     const showWorld = scrollProgress > 0.02;
     scene.visible = showWorld;
 
-    if (scrollProgress >= 1.0 && !introComplete) {
+    if (scrollProgress >= 0.999 && !introComplete) {
         introComplete = true;
         activateGame();
     }
+};
+
+/*
+ * Called by script.js the instant the journey playhead hits the world. The
+ * scroll controller is one-way from here: this is the seam where the voxel
+ * world takes permanent ownership of input.
+ */
+window.onSaifWorldLock = function () {
+    worldLocked = true;
+    // Stop re-interpreting scroll as journey input. The intro camera is done;
+    // from now on the camera is driven by updateCamera().
+    scrollProgress = 1;
+    worldOverlay.style.opacity = '1';
+    worldOverlay.style.pointerEvents = 'auto';
+    scene.visible = true;
 };
 
 function activateGame() {
@@ -1343,12 +1582,24 @@ function activateGame() {
     gameActive = true;
 
     // Snap player to spawn
-    player.x = 0;
-    player.z = 10;
-    player.y = surfaceY(0, 10);
+    player.x = SPAWN.x;
+    player.z = SPAWN.z;
+    player.y = surfaceY(SPAWN.x, SPAWN.z);
     player.vx = 0; player.vy = 0; player.vz = 0;
-    player.yaw = Math.PI; // face into the world (toward portal direction)
+    player.yaw = SPAWN.yaw;   // face -Z, toward Wall Maria
     player.pitch = 0;
+
+    // Drop the player onto whatever is actually solid at the spawn, so they
+    // never start buried in a house or hovering over a pit.
+    unstickFromSolid();
+
+    // Snap the third-person camera to its target so entry doesn't sweep in
+    // from a stale position.
+    camera.gameInit = false;
+
+    // Space is gone — hide the galaxy/Earth layers for good so they cannot
+    // reappear behind the voxel world.
+    if (typeof window.onSaifHideSpace === 'function') window.onSaifHideSpace();
 
     showHUD();
     setPromptVisible(true);
@@ -1378,15 +1629,21 @@ function animate(now) {
     const time = now / 1000;
 
     if (!introComplete) {
-        // Scroll-driven intro camera
+        // Scroll-driven intro camera — descends from deep space to the exact
+        // spot the third-person follow camera will take over from.
         const t = scrollProgress * scrollProgress * (3 - 2 * scrollProgress);
         camera.position.set(
-            CAM_START.x,
+            CAM_START.x + (CAM_END.x - CAM_START.x) * t,
             CAM_START.y + (CAM_END.y - CAM_START.y) * t,
             CAM_START.z + (CAM_END.z - CAM_START.z) * t
         );
-        const lookZ = -5 + t * -15;
-        camera.lookAt(0, 3, lookZ);
+        // Look target sweeps from far up the district to the ground ahead of
+        // the spawn, so the camera is already aimed correctly on arrival.
+        camera.lookAt(
+            SPAWN.x * t,
+            3 - 2 * t,
+            -20 + (SPAWN.z + 20) * t
+        );
     } else {
         // Game camera
         updatePlayer(dt);
@@ -1438,10 +1695,12 @@ window.restartGame = function () {
     }
 
     // Reset player
-    player.x = 0; player.z = 10;
-    player.y = surfaceY(0, 10);
+    player.x = SPAWN.x; player.z = SPAWN.z;
+    player.y = surfaceY(SPAWN.x, SPAWN.z);
     player.vx = 0; player.vy = 0; player.vz = 0;
-    player.yaw = Math.PI; player.pitch = 0;
+    player.yaw = SPAWN.yaw; player.pitch = 0;
+    unstickFromSolid();
+    camera.gameInit = false;   // re-snap the follow camera on restart too
 
     missionComplete = false;
     completeEl.style.display = 'none';
@@ -1456,67 +1715,219 @@ window.restartGame = function () {
 ═══════════════════════════════════════════════════════════════════ */
 buildHUD();
 
-// Shiganshina Buildings (dense medieval town)
+/*
+ * Read-only test probe.
+ *
+ * The player, camera and titan state live in module scope, which is
+ * deliberate encapsulation. Exposing a pure getter lets the browser test
+ * harness observe real gameplay (position, grounded, camera, titan phase)
+ * without the game code needing to know about tests, and without adding any
+ * way to mutate state from the console.
+ */
+window.__saifTestProbe = function () {
+    return {
+        player: {
+            x: player.x, y: player.y, z: player.z,
+            vx: player.vx, vy: player.vy, vz: player.vz,
+            yaw: player.yaw, pitch: player.pitch,
+            grounded: player.grounded,
+        },
+        camera: {
+            x: camera.position.x, y: camera.position.y, z: camera.position.z,
+        },
+        gameActive,
+        worldLocked,
+        pointerLocked,
+        titan: {
+            active: titanEvent.active,
+            phase: titanEvent.phase,
+            time: titanEvent.time,
+            visible: titanMesh ? titanMesh.visible : null,
+        },
+        playerMeshVisible: playerMesh.visible,
+        playerMeshPos: {
+            x: playerMesh.position.x, y: playerMesh.position.y, z: playerMesh.position.z,
+        },
+        // Collision truth: would the player box overlap a solid here?
+        insideSolid: boxHitsSolid(player.x, player.y, player.z),
+        solidCount: solidSet.size,
+    };
+};
+
+/* ═══════════════════════════════════════════════════════════════════
+   SHIGANSHINA — Reference-driven rebuild
+═══════════════════════════════════════════════════════════════════ */
+
+// Materials for town
+const townMats = {
+    wallTan:      new THREE.MeshLambertMaterial({ color: 0xd4a574 }),
+    wallDark:     new THREE.MeshLambertMaterial({ color: 0xa0826d }),
+    roofBrown:    new THREE.MeshLambertMaterial({ color: 0x8b5a2b }),
+    roofRed:      new THREE.MeshLambertMaterial({ color: 0xc85a3f }),
+    roofOrange:   new THREE.MeshLambertMaterial({ color: 0xd4a574 }),
+    woodFrame:    new THREE.MeshLambertMaterial({ color: 0x5c4033 }),
+    doorFrame:    new THREE.MeshLambertMaterial({ color: 0x4a3728 }),
+    window:       new THREE.MeshLambertMaterial({ color: 0x8db3d0 }),
+};
+
+function buildHouse(x, z, w, d, h) {
+    const baseY = heightAt(Math.round(x), Math.round(z));
+
+    // Main walls (hollow box)
+    for (let dx = 0; dx < w; dx++) {
+        for (let dz = 0; dz < d; dz++) {
+            for (let dy = 0; dy < h; dy++) {
+                const isPerimeter = (dx === 0 || dx === w - 1 || dz === 0 || dz === d - 1);
+                if (isPerimeter || dy === 0) {
+                    const mat = (dy === 0) ? townMats.wallDark : townMats.wallTan;
+                    queueBlock(x + dx, baseY + dy, z + dz, mat, true);
+                }
+            }
+        }
+    }
+
+    // Roof — angled/sloped appearance
+    const roofColors = [townMats.roofBrown, townMats.roofRed, townMats.roofOrange];
+    const roofColor = roofColors[Math.floor(Math.random() * roofColors.length)];
+
+    for (let dx = -1; dx <= w; dx++) {
+        for (let dz = -1; dz <= d; dz++) {
+            // Peak in center, slopes to edges
+            const distX = Math.abs(dx - w / 2);
+            const distZ = Math.abs(dz - d / 2);
+            const roofH = Math.max(0, 2 - Math.max(distX, distZ) * 0.5);
+
+            if (roofH > 0) {
+                queueBlock(x + dx, baseY + h + Math.floor(roofH), z + dz, roofColor, true);
+            }
+        }
+    }
+
+    // Windows on upper walls (simple)
+    if (h >= 2) {
+        // Front face windows
+        for (let dx = 1; dx < w - 1; dx += 2) {
+            queueBlock(x + dx, baseY + h - 1, z, townMats.window, false);
+        }
+        // Side windows
+        for (let dz = 1; dz < d - 1; dz += 2) {
+            queueBlock(x, baseY + h - 1, z + dz, townMats.window, false);
+            queueBlock(x + w - 1, baseY + h - 1, z + dz, townMats.window, false);
+        }
+    }
+}
+
 function buildShinganshina() {
-    const roofMat = new THREE.MeshLambertMaterial({ color: 0x8b4513 });
-    const wallMat = new THREE.MeshLambertMaterial({ color: 0xd2b48c });
-    const woodMat = new THREE.MeshLambertMaterial({ color: 0x654321 });
+    // Dense town layout based on references
+    // Main plaza/square in center
 
-    const housePositions = [
-        { x: -8, z: 0, w: 4, d: 4, h: 3 },
-        { x: -8, z: 6, w: 3, d: 3, h: 3 },
-        { x: 6, z: -2, w: 5, d: 4, h: 4 },
-        { x: 10, z: 4, w: 3, d: 5, h: 3 },
-        { x: -14, z: -8, w: 4, d: 4, h: 3 },
-        { x: 14, z: -6, w: 3, d: 4, h: 3 },
-        { x: -18, z: 6, w: 5, d: 3, h: 4 },
-        { x: 18, z: -12, w: 4, d: 5, h: 3 },
-    ];
+    // North district (cluster 1)
+    buildHouse(-10, -4, 4, 5, 3);
+    buildHouse(-4, -6, 5, 4, 3);
+    buildHouse(2, -5, 4, 4, 4);
+    buildHouse(-8, 2, 3, 3, 3);
+    buildHouse(-2, 1, 4, 3, 3);
 
-    housePositions.forEach(house => {
-        const baseY = heightAt(Math.round(house.x), Math.round(house.z));
+    // East district (cluster 2)
+    buildHouse(8, -8, 5, 4, 3);
+    buildHouse(14, -6, 4, 5, 3);
+    buildHouse(12, 2, 4, 4, 4);
+    buildHouse(8, 4, 3, 4, 3);
 
-        // Walls
-        for (let dx = 0; dx < house.w; dx++) {
-            for (let dz = 0; dz < house.d; dz++) {
-                for (let dy = 0; dy < house.h; dy++) {
-                    // Hollow inside (only perimeter)
-                    if (dx === 0 || dx === house.w - 1 || dz === 0 || dz === house.d - 1 || dy === 0) {
-                        queueBlock(house.x + dx, baseY + dy, house.z + dz, wallMat);
+    // South district (cluster 3)
+    buildHouse(-12, 8, 4, 5, 3);
+    buildHouse(-4, 10, 5, 4, 3);
+    buildHouse(4, 9, 4, 4, 3);
+    buildHouse(10, 8, 3, 5, 3);
+
+    // West district (cluster 4)
+    buildHouse(-18, -2, 4, 4, 3);
+    buildHouse(-16, 5, 5, 4, 3);
+    buildHouse(-20, 12, 4, 3, 3);
+
+    // Taller central structures (landmarks)
+    buildHouse(-1, 5, 3, 3, 5);  // Tower-like
+    buildHouse(6, 6, 3, 3, 4);
+
+    // Market area (loose cluster)
+    buildHouse(-6, -12, 4, 3, 2);
+    buildHouse(2, -14, 5, 4, 2);
+    buildHouse(8, -12, 3, 4, 2);
+
+    // Waterfront settlement (near water)
+    buildHouse(-16, -18, 4, 3, 2);
+    buildHouse(-8, -20, 4, 4, 2);
+    buildHouse(0, -18, 3, 4, 2);
+    buildHouse(10, -16, 4, 3, 2);
+}
+
+buildShinganshina();
+/*
+ * Shiganshina wall — Wall Maria's inner gate district.
+ *
+ * The previous version stepped `x += 2`, leaving a 1-block gap at every odd
+ * coordinate. The player box is 0.64 wide, so it fitted straight through those
+ * gaps: the wall was decorative, not solid. It is now stepped by 1 and the
+ * player is additionally confined to the district interior, so the perimeter
+ * cannot be escaped at the corners either.
+ */
+const WALL = {
+    xMin: -26, xMax: 26,   // wall inner faces sit at these columns
+    zMin: -22, zMax: 14,
+    height: 8,
+};
+
+function buildWall() {
+    const wallMat = new THREE.MeshLambertMaterial({ color: 0x7a6e62 });
+    const wallTop = new THREE.MeshLambertMaterial({ color: 0x8d8274 });
+    const H = WALL.height;
+
+    for (let x = WALL.xMin; x <= WALL.xMax; x++) {
+        for (let y = 0; y < H; y++) queueBlock(x, y, WALL.zMin, y === H - 1 ? wallTop : wallMat, true);
+        for (let y = 0; y < H; y++) queueBlock(x, y, WALL.zMax, y === H - 1 ? wallTop : wallMat, true);
+    }
+    for (let z = WALL.zMin; z <= WALL.zMax; z++) {
+        for (let y = 0; y < H; y++) queueBlock(WALL.xMin, y, z, y === H - 1 ? wallTop : wallMat, true);
+        for (let y = 0; y < H; y++) queueBlock(WALL.xMax, y, z, y === H - 1 ? wallTop : wallMat, true);
+    }
+
+    // Corner bastions — read as wall towers and stop the corners being thin.
+    for (const cx of [WALL.xMin, WALL.xMax]) {
+        for (const cz of [WALL.zMin, WALL.zMax]) {
+            for (let dx = -1; dx <= 1; dx++) {
+                for (let dz = -1; dz <= 1; dz++) {
+                    for (let y = 0; y < H + 4; y++) {
+                        queueBlock(cx + dx, y, cz + dz, y >= H ? wallTop : wallMat, true);
                     }
                 }
             }
         }
+    }
 
-        // Roof (slanted appearance via height variation)
-        for (let dx = -1; dx <= house.w; dx++) {
-            for (let dz = -1; dz <= house.d; dz++) {
-                const roofY = baseY + house.h + Math.max(0, 1 - Math.abs(dx - house.w / 2) / 2);
-                queueBlock(house.x + dx, roofY, house.z + dz, roofMat);
+    // Mid-wall watchtowers, Wall Maria style — taller than the curtain and
+    // solid all the way down so they also act as collision landmarks.
+    for (const tx of [-13, 0, 13]) {
+        for (let dx = -1; dx <= 1; dx++) {
+            for (let y = 0; y < H + 3; y++) {
+                queueBlock(tx + dx, y, WALL.zMin, wallMat, true);
+                queueBlock(tx + dx, y, WALL.zMax, wallMat, true);
             }
         }
-
-        // Door (gap in wall)
-        const doorX = house.x + Math.floor(house.w / 2);
-        const doorZ = house.z;
-        // (Conceptual — actual block removal would require different architecture)
-    });
-}
-
-buildShinganshina();
-// Shiganshina wall structure — massive defensive perimeter around settlement
-function buildWall() {
-    const wallMat = new THREE.MeshLambertMaterial({ color: 0x7a6e62 });
-    const wallH = 8;
-    for (let x = -26; x <= 26; x += 2) {
-        for (let y = 0; y < wallH; y++) queueBlock(x, y, -22, wallMat);
-        for (let y = 0; y < wallH; y++) queueBlock(x, y, 14, wallMat);
-    }
-    for (let z = -22; z <= 14; z += 2) {
-        for (let y = 0; y < wallH; y++) queueBlock(-26, y, z, wallMat);
-        for (let y = 0; y < wallH; y++) queueBlock(26, y, z, wallMat);
     }
 }
+
+/**
+ * Keeps the player inside the district. The wall now genuinely blocks
+ * movement, but a corner gap or a future edit could still let the player
+ * leave, so the interior is also enforced as a hard bound.
+ */
+function clampToDistrict() {
+    return {
+        x: Math.max(WALL.xMin + 0.5 + PLAYER_RADIUS, Math.min(WALL.xMax - 0.5 - PLAYER_RADIUS, player.x)),
+        z: Math.max(WALL.zMin + 0.5 + PLAYER_RADIUS, Math.min(WALL.zMax - 0.5 - PLAYER_RADIUS, player.z)),
+    };
+}
+
 buildTerrain();
 buildWall();
 buildTrees();

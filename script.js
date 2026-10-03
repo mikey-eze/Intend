@@ -1,123 +1,142 @@
 /*
- * script.js — SAIF.OS space journey controller
+ * SAIF.OS journey controller
  *
- * Master journey: current = 0 → 1 over 400vh of page height.
+ * Space → galaxy → Earth approach → world entry.
  *
- *   0.00 – 0.50  SPACE / GALAXY APPROACH
- *                Galaxy idles + slowly grows even without scrolling.
- *                Stars rush toward camera. Speed scales with scroll.
+ * PIPELINE
+ *   native scroll (wheel)      → rawScroll
+ *   rate-limited chase         → journeyTarget
+ *   per-section exponential    → journeyCurrent
+ *   stage mapping              → galaxy / Earth / voxel progress
  *
- *   0.50 – 0.68  GALAXY ZOOM-THROUGH
- *                Galaxy blows up to fill / exceed the screen.
+ * Two properties this file must guarantee:
  *
- *   0.65 – 0.75  GALAXY FADE
- *                Galaxy becomes transparent as you pass through it.
+ *  1. ONE wheel gesture can never skip the journey. `journeyTarget` chases
+ *     raw scroll at a fixed *rate per millisecond* (MAX_TARGET_RATE), so the
+ *     playhead covers 0 → 1 in at least 1 / MAX_TARGET_RATE ms no matter how
+ *     violent the input. This is the actual fix for "one big wheel lands on
+ *     Earth instantly".
  *
- *   0.72 – 0.82  EARTH REVEAL
- *                Earth fades in from 0 — starts small, far away.
+ *  2. NO idle-time progression. Every visual is a pure function of
+ *     journeyCurrent. Stop scrolling and the scene stops. There is no
+ *     elapsedTime term feeding galaxy or Earth scale.
  *
- *   0.80 – 0.96  EARTH APPROACH
- *                Earth grows toward you. Idle + scroll controlled.
- *
- *   0.85 – 1.00  VOXEL WORLD TRANSITION
- *                Earth fills frame → voxel world fades in over it.
- *                (wider band = gentler camera journey)
+ * Damping is per-section, not global: the galaxy is cinematic and slow, the
+ * Earth approach is noticeably faster so the user feels forward travel, and
+ * world entry is controlled. All smoothing is deltaTime-based and therefore
+ * identical at 60 / 120 / 144 Hz. delta is hard-clamped so a tab switch or a
+ * GC pause cannot teleport the playhead.
  */
 
-/* ── DOM refs ─────────────────────────────────────────────────── */
-const galaxy  = document.querySelector(".galaxy");
-const earth   = document.querySelector(".earth");
-const earthUI = document.querySelector(".earth-ui");
-const oldUI   = document.querySelector(".old-ui");
+const galaxy  = document.querySelector('.galaxy');
+const earth   = document.querySelector('.earth');
+const earthUI = document.querySelector('.earth-ui');
+const oldUI   = document.querySelector('.old-ui');
+const canvas  = document.querySelector('#space-dust');
+const context = canvas.getContext('2d');
 
-const canvas  = document.querySelector("#space-dust");
-const context = canvas.getContext("2d");
+const stars = [];
+const distantStars = [];
 
-/* ── Star pools ───────────────────────────────────────────────── */
-const stars        = [];   // forward-rushing perspective dust
-const distantStars = [];   // static background twinkle
-
-/* ── Time / scroll state ──────────────────────────────────────── */
-let width  = 0;
+let width = 0;
 let height = 0;
-let lastTime       = performance.now();
-let introStartTime = lastTime;
+let lastTime = performance.now();
 
-let target  = 0;   // raw scroll progress  [0, 1]
-let current = 0;   // smoothed progress    [0, 1]
-let playhead = 0, playhead = 0, playhead = 0;
-let worldLocked = false;
+/* ═══════════════════════════════════════════════════════════════════
+   JOURNEY STAGES
+   Real physical distance between each beat — the Earth approach in
+   particular occupies a wide window (0.63 → 0.90) so the planet is
+   visibly small → huge rather than fading in already oversized.
+═════════════════════════════════════════════════════════════════════ */
+const STAGE = {
+    GALAXY_END:   0.42,   // travelling through the galaxy
+    REVEAL_END:   0.56,   // galaxy fades, Earth is first visible (far)
+    APPROACH_END: 0.90,   // Earth grows until it fills the view
+    WORLD_END:    1.00,   // Earth → voxel world
+};
 
-/* ── Utilities ────────────────────────────────────────────────── */
+let journeyTarget  = 0;   // rate-limited intent
+let journeyCurrent = 0;   // smoothed value every visual reads
+let worldLocked    = false;
+let rawScroll      = 0;
+let pinnedScrollY  = 0;
+
+/*
+ * Maximum playhead movement per millisecond.
+ * 0.000085 → a full 0→1 journey takes >= ~11.8s of continuous travel.
+ * Raise this and large wheel flicks start skipping beats; lower it and the
+ * journey feels unresponsive. Tuned deliberately slow for the galaxy and
+ * compensated later by per-section damping.
+ */
+const MAX_TARGET_RATE = 0.000085;
+
+/* journeyCurrent at which the world is entered and scrolling is locked. */
+const WORLD_LOCK_THRESHOLD = 0.995;
+
+/* Per-section response. Cinematic → moderate → responsive → controlled. */
+const DAMP_GALAXY   = 2.2;
+const DAMP_REVEAL   = 4.0;
+const DAMP_APPROACH = 7.5;
+const DAMP_WORLD    = 3.0;
+
+function journeyDamping(p) {
+    if (p < STAGE.GALAXY_END)   return DAMP_GALAXY;
+    if (p < STAGE.REVEAL_END)   return DAMP_REVEAL;
+    if (p < STAGE.APPROACH_END) return DAMP_APPROACH;
+    return DAMP_WORLD;
+}
+
 function clamp(value, min, max) {
     return Math.max(min, Math.min(max, value));
 }
 
-/* Ken Perlin's smootherstep — S-curve between a and b */
 function smootherStep(a, b, x) {
+    if (a === b) return x >= b ? 1 : 0;
     x = clamp((x - a) / (b - a), 0, 1);
     return x * x * x * (x * (x * 6 - 15) + 10);
 }
 
-/* ── Star system ──────────────────────────────────────────────── */
+/* ── STAR SYSTEM ─────────────────────────────────────────────── */
+/* Unchanged from the original IntendOS upload — forward-depth dust.
+   Stars travel TOWARD the viewer along rays from the screen centre,
+   with size and brightness scaling on proximity, and recycle when
+   they pass the camera plane. */
 
-/*
- * Stars begin at depth 1 (far) and shrink to 0 (camera).
- * Position is stored as normalised angle + distance so stars
- * originate in an invisible ring around the viewer's direction
- * and fly outward in screen-space as depth decreases — creating
- * the classic forward-travel streak effect.
- */
 function resetStar(star, randomDepth = false) {
-    const angle    = Math.random() * Math.PI * 2;
+    const angle = Math.random() * Math.PI * 2;
     const distance = Math.random() * 1.1 + 0.08;
 
     star.x = Math.cos(angle) * distance;
     star.y = Math.sin(angle) * distance;
-
-    star.depth = randomDepth
-        ? Math.random() * 0.96 + 0.04
-        : 1;
-
-    star.size  = Math.random() * 1.7 + 0.35;
+    star.depth = randomDepth ? Math.random() * 0.96 + 0.04 : 1;
+    star.size = Math.random() * 1.7 + 0.35;
     star.speed = Math.random() * 0.00038 + 0.00018;
-
-    star.tone = [
-        "#d7eaff",
-        "#fff2d0",
-        "#b7d6ff",
-        "#f3d8bd"
-    ][Math.floor(Math.random() * 4)];
-
+    star.tone = ['#d7eaff', '#fff2d0', '#b7d6ff', '#f3d8bd'][Math.floor(Math.random() * 4)];
     star.twinkle = Math.random() * Math.PI * 2;
 }
 
 function resize() {
     const ratio = Math.min(window.devicePixelRatio || 1, 2);
-
-    width  = window.innerWidth;
+    width = window.innerWidth;
     height = window.innerHeight;
 
-    canvas.width  = width  * ratio;
+    canvas.width = width * ratio;
     canvas.height = height * ratio;
-
     context.setTransform(ratio, 0, 0, ratio, 0, 0);
 
-    stars.length        = 0;
+    stars.length = 0;
     distantStars.length = 0;
 
-    /* Distant static background stars */
     for (let i = 0; i < Math.floor((width * height) / 11000); i++) {
         distantStars.push({
-            x:     Math.random(),
-            y:     Math.random(),
-            size:  Math.random() * 0.9 + 0.25,
+            x: Math.random(),
+            y: Math.random(),
+            size: Math.random() * 0.9 + 0.25,
             phase: Math.random() * Math.PI * 2,
-            tone:  ["#7897b2", "#a2b9c9", "#c7bda7"][Math.floor(Math.random() * 3)]
+            tone: ['#7897b2', '#a2b9c9', '#c7bda7'][Math.floor(Math.random() * 3)]
         });
     }
 
-    /* Forward-rushing perspective dust */
     for (let i = 0; i < Math.floor((width * height) / 5200); i++) {
         const star = {};
         resetStar(star, true);
@@ -127,40 +146,28 @@ function resize() {
 
 function drawDistantStars(time) {
     for (const star of distantStars) {
-        const driftX = Math.sin(time / 9000  + star.phase) * 1.5;
+        const driftX = Math.sin(time / 9000 + star.phase) * 1.5;
         const driftY = Math.cos(time / 11000 + star.phase) * 1;
-
-        context.globalAlpha =
-            0.22 + (Math.sin(time / 1600 + star.phase) + 1) * 0.08;
-
+        context.globalAlpha = 0.22 + (Math.sin(time / 1600 + star.phase) + 1) * 0.08;
         context.fillStyle = star.tone;
         context.beginPath();
-        context.arc(
-            star.x * width  + driftX,
-            star.y * height + driftY,
-            star.size, 0, Math.PI * 2
-        );
+        context.arc(star.x * width + driftX, star.y * height + driftY, star.size, 0, Math.PI * 2);
         context.fill();
     }
     context.globalAlpha = 1;
 }
 
-/*
- * Speed factor: base 1× idle, grows to 5× at peak scroll.
- * Capped at 5 (was 8) — prevents warp-speed visuals on fast scroll.
- * Mapped over 0.0–0.70 so the galaxy zoom phase feels intense.
- */
+/* Warp increases as the journey advances — forward-travel perception. */
 function speedFactor() {
-    return 1 + smootherStep(0, 0.70, current) * 4;
+    return 1 + smootherStep(0, STAGE.REVEAL_END, journeyCurrent) * 4;
 }
 
 function drawStars(delta, time) {
-    const centerX = width  / 2;
+    const centerX = width / 2;
     const centerY = height / 2;
 
     for (const star of stars) {
         const previousDepth = star.depth;
-
         star.depth -= star.speed * delta * speedFactor();
 
         if (star.depth <= 0.035) {
@@ -168,10 +175,10 @@ function drawStars(delta, time) {
             continue;
         }
 
-        const x  = centerX + (star.x / star.depth)    * width  * 0.44;
-        const y  = centerY + (star.y / star.depth)     * height * 0.44;
-        const px = centerX + (star.x / previousDepth)  * width  * 0.44;
-        const py = centerY + (star.y / previousDepth)  * height * 0.44;
+        const x = centerX + (star.x / star.depth) * width * 0.44;
+        const y = centerY + (star.y / star.depth) * height * 0.44;
+        const px = centerX + (star.x / previousDepth) * width * 0.44;
+        const py = centerY + (star.y / previousDepth) * height * 0.44;
 
         if (x < -40 || x > width + 40 || y < -40 || y > height + 40) {
             resetStar(star);
@@ -179,177 +186,184 @@ function drawStars(delta, time) {
         }
 
         const brightness = Math.min(1, 0.24 + (1 - star.depth) * 1.2);
-        const twinkle    = 0.84 + Math.sin(time / 700 + star.twinkle) * 0.16;
+        const twinkle = 0.84 + Math.sin(time / 700 + star.twinkle) * 0.16;
 
         context.globalAlpha = brightness * twinkle;
         context.strokeStyle = star.tone;
-        context.lineWidth   = Math.max(0.35, star.size * (1.55 - star.depth));
-
-        /* Streak line toward camera */
+        context.lineWidth = Math.max(0.35, star.size * (1.55 - star.depth));
         context.beginPath();
         context.moveTo(px, py);
-        context.lineTo(x,  y);
+        context.lineTo(x, y);
         context.stroke();
 
-        /* Close-up dot at very low depth */
         if (star.depth < 0.3) {
             context.globalAlpha = brightness * 0.7;
-            context.fillStyle   = star.tone;
+            context.fillStyle = star.tone;
             context.beginPath();
             context.arc(x, y, star.size * 0.9, 0, Math.PI * 2);
             context.fill();
         }
     }
-
     context.globalAlpha = 1;
 }
 
-/* ── Scroll Physics ─────────────────────────────────────────────────── */
-let target = 0;
-let current = 0;
-let worldLocked = false;
-let maxVelocity = 0.0006; // extremely constrained speed
-
-function updateTarget() {
-    if (worldLocked) return;
-    const maxScroll = document.documentElement.scrollHeight - window.innerHeight;
-    window._rawTarget = maxScroll > 0 ? clamp(window.scrollY / maxScroll, 0, 1) : 0;
+/* ── SCROLL INPUT ────────────────────────────────────────────── */
+/*
+ * Native document scroll is the only input. The listener is passive and
+ * never calls preventDefault, so the browser keeps full ownership of the
+ * gesture (trackpad momentum, scrollbar drag and keyboard all keep
+ * working). It only *reads* position; it never writes it.
+ */
+function readNativeScroll() {
+    // World entered: the journey is one-way. Force the page back to the
+    // pinned position so scroll-up / scroll-down / scrollbar dragging cannot
+    // move the document at all, and never recompute rawScroll.
+    if (worldLocked) {
+        if (Math.abs(window.scrollY - pinnedScrollY) > 0.5) {
+            window.scrollTo(0, pinnedScrollY);
+        }
+        return;
+    }
+    const maxScroll = Math.max(1, document.documentElement.scrollHeight - window.innerHeight);
+    rawScroll = clamp(window.scrollY / maxScroll, 0, 1);
 }
-window._rawTarget = 0;
 
-/* ── Render loop ──────────────────────────────────────────────── */
+window.addEventListener('scroll', readNativeScroll, { passive: true });
+
+window.addEventListener('resize', () => {
+    resize();
+    readNativeScroll();
+});
+
+/* ── PLAYHEAD INTEGRATION ────────────────────────────────────── */
+function lockWorld() {
+    if (worldLocked) return;
+    worldLocked = true;
+    journeyTarget = 1;
+    journeyCurrent = 1;
+
+    // Pin the native scroll position at the bottom. Deliberately NOT using
+    // overflow:hidden — that would remove the scrollbar, widening the layout
+    // by ~15px and resizing the canvas at the exact frame of world entry.
+    // Holding scrollY fixed keeps the viewport dimensions stable while
+    // making the lock real: the page can no longer be scrolled anywhere.
+    pinnedScrollY = window.scrollY;
+
+    // Voxel world listens for this to take over input permanently.
+    if (typeof window.onSaifWorldLock === 'function') window.onSaifWorldLock();
+    hideSpaceForever();
+}
 
 /*
- * Track when the Earth section becomes active so idle timers are
- * correct. Reset to null if the user scrolls back before the
- * reveal threshold — prevents Earth appearing pre-zoomed on re-entry.
+ * Once the world is entered the journey is over for good. Hiding the space
+ * layers here (rather than in the render loop) means they cannot flicker
+ * back if the playhead is ever nudged, and the star canvas stops burning
+ * frames on a scene nobody can see.
  */
-let earthEnteredTime = null;
+function hideSpaceForever() {
+    galaxy.style.display = 'none';
+    earth.style.display = 'none';
+    earthUI.style.display = 'none';
+    oldUI.style.display = 'none';
+    canvas.style.display = 'none';
+}
 
+function advanceJourney(delta) {
+    if (worldLocked) return;
+
+    // Rate-limited chase. `maxStep` is the whole safety mechanism: however
+    // far rawScroll jumps, the target advances at most maxStep this frame.
+    const difference = rawScroll - journeyTarget;
+    const maxStep = MAX_TARGET_RATE * delta;
+
+    if (Math.abs(difference) <= maxStep) {
+        journeyTarget = rawScroll;
+    } else {
+        journeyTarget += Math.sign(difference) * maxStep;
+    }
+
+    journeyTarget = clamp(journeyTarget, 0, 1);
+
+    // Per-section exponential smoothing — frame-rate independent.
+    const damping = journeyDamping(journeyCurrent);
+    const smoothing = 1 - Math.exp(-(delta / 1000) * damping);
+    journeyCurrent += (journeyTarget - journeyCurrent) * smoothing;
+    journeyCurrent = clamp(journeyCurrent, 0, 1);
+
+    if (journeyCurrent >= WORLD_LOCK_THRESHOLD) lockWorld();
+}
+
+/* ── RENDER ──────────────────────────────────────────────────── */
 function render(now) {
-    const delta = Math.min(40, now - lastTime || 16);
+    // Hard clamp: tab switch / GC pause must not jump the playhead.
+    const delta = Math.min(40, Math.max(1, now - lastTime));
     lastTime = now;
 
     if (worldLocked) {
-        window._rawTarget = 1;
-        target = 1;
-        current = 1;
-    } else {
-        const dist = window._rawTarget - target;
-        const maxStep = maxVelocity * delta;
-        if (Math.abs(dist) > maxStep) {
-            target += Math.sign(dist) * maxStep;
-        } else {
-            target = window._rawTarget;
-        }
-        current += (target - current) * (1 - Math.exp(-(delta / 1000) * 4.5));
-    }
-    
-    if (current > 0.99 && !worldLocked) {
-        worldLocked = true;
+        // Journey is over. The voxel world owns the frame from here — stop the
+        // rAF chain and stop touching the space DOM every frame.
+        return;
     }
 
-    const playhead = current;
+    advanceJourney(delta);
 
-    /* ── GALAXY ──
-     *
-     * Idle approach: galaxy slowly enlarges even without scrolling.
-     * It starts at scale ~0.72 and creeps forward at 0.000012/ms
-     * so after 60 s idle it has grown visibly but not alarmingly.
-     *
-     * Scroll zoom:
-     *   0.00–0.50 → gentle approach (scale 1 → ~3)
-     *   0.50–0.68 → rapid zoom-through (scale 3 → ~40)
-     *
-     * Fade:
-     *   0.65–0.75 → opacity 1 → 0  (galaxy disappears behind viewer)
-     * ───────────────────────────────────────────────────────── */
-    const galaxyIdleTime  = Math.max(0, now - introStartTime);
-    const galaxyIdleScale = 1 + galaxyIdleTime * 0.000012;
+    // lockWorld() may have fired inside advanceJourney. Bail before writing
+    // any space styles, otherwise this frame would overwrite the world
+    // overlay opacity that onSaifWorldLock just forced to 1.
+    if (worldLocked) return;
 
-    /* Approach phase 0→0.50 (gentle), zoom-through 0.50→0.68 */
-    const galaxyApproach   = smootherStep(0.00, 0.35, playhead) * 2.5;
-    const galaxyZoom       = smootherStep(0.35, 0.50, playhead) * 37;
-    const galaxyScrollZoom = galaxyApproach + galaxyZoom;
+    const playhead = journeyCurrent;
 
-    const galaxyScale   = galaxyIdleScale + galaxyScrollZoom;
-    const galaxyOpacity = 1 - smootherStep(0.40, 0.52, playhead);
+    /* GALAXY — long cinematic approach, then a zoom-through.
+       No idle-time term: scale is purely a function of the playhead. */
+    const galaxyApproach = smootherStep(0.00, STAGE.GALAXY_END, playhead) * 1.5;
+    const galaxyZoom     = smootherStep(STAGE.GALAXY_END, STAGE.REVEAL_END, playhead) * 34;
+    const galaxyScale    = 0.72 + galaxyApproach + galaxyZoom;
+    const galaxyOpacity  = 1 - smootherStep(0.46, 0.58, playhead);
 
     galaxy.style.transform = `translate(-50%, -50%) scale(${galaxyScale})`;
-    galaxy.style.opacity   = galaxyOpacity;
+    galaxy.style.opacity = String(galaxyOpacity);
+    galaxy.style.display = galaxyOpacity > 0.005 ? 'block' : 'none';
 
-    /* ── SPACE DUST ───────────────────────────────────────────── */
     context.clearRect(0, 0, width, height);
     drawDistantStars(now);
     drawStars(delta, now);
 
-    /* ── EARTH ─────────────────────────────────────────────────
-     *
-     * Reveal: opacity 0→1 over 0.72–0.82
-     *
-     * Scale: Earth appears small (scale 0.15) and grows toward viewer.
-     * Two drivers:
-     *   • idle drift — starts counting once Earth is revealed
-     *   • scroll zoom — smooth push as user scrolls 0.80→0.96
-     *
-     * earthEnteredTime resets if user scrolls back before 0.72 so
-     * the idle zoom restarts correctly on re-entry.
-     * ───────────────────────────────────────────────────────── */
-    const earthReveal = smootherStep(0.58, 0.68, playhead);
+    /* EARTH — a real approach, not a fade-in.
+       Exposed well before it grows: at reveal it is ~0.12 of its base size,
+       which is a small distant planet, and it does not reach full size
+       until the very end of its window. */
+    const earthReveal   = smootherStep(0.54, 0.63, playhead);
+    const earthApproach = smootherStep(0.63, STAGE.APPROACH_END, playhead);
 
-    if (earthReveal > 0 && earthEnteredTime === null) {
-        /* Earth section entered — start the idle clock */
-        earthEnteredTime = now;
-    } else if (earthReveal <= 0 && earthEnteredTime !== null) {
-        /* User scrolled back before the reveal — reset so idle
-           zoom doesn't pre-load next time they scroll forward */
-        earthEnteredTime = null;
-    }
+    // Exponential growth reads as distance closing; linear reads as a zoom.
+    const EARTH_START = 0.12;   // far away — small
+    const EARTH_END   = 5.5;    // fills the viewport
+    const earthScale  = EARTH_START * Math.pow(EARTH_END / EARTH_START, earthApproach);
 
-    /* Idle growth — starts at 0 when Earth first appears */
-    const earthIdleTime = earthEnteredTime !== null
-        ? Math.max(0, now - earthEnteredTime)
-        : 0;
-    const 0 = earthIdleTime * 0.000010;   /* ~0.6 after 60 s */
-
-    /* Scroll-driven approach — Earth arrives later and starts completely off-screen distant */
-    const earthScrollZoom = smootherStep(0.60, 0.92, playhead) * 10;
-
-    /* Start Earth tiny so it really comes from far away */
-    const earthScale = 0.02 + 0 + earthScrollZoom;
+    // Hand off to the world in the last stretch of the approach.
+    const earthFade = 1 - smootherStep(0.92, 0.99, playhead);
 
     earth.style.transform = `translate(-50%, -50%) scale(${earthScale})`;
-    earth.style.opacity   = earthReveal;
-    earth.style.display  = earthReveal > 0.01 ? 'block' : 'none';
+    earth.style.opacity = String(earthReveal * earthFade);
+    earth.style.display = earthReveal > 0.005 && earthFade > 0.005 ? 'block' : 'none';
 
-    /* Earth UI label */
-    earthUI.style.opacity = smootherStep(0.65, 0.75, playhead);
+    earthUI.style.opacity = String(smootherStep(0.66, 0.78, playhead));
+    earthUI.style.display = earthUI.style.opacity > 0.01 ? 'flex' : 'none';
 
-    /* Old-UI (space HUD) fades out as galaxy disappears */
-    oldUI.style.opacity = 1 - smootherStep(0.40, 0.50, playhead);
+    oldUI.style.opacity = String(1 - smootherStep(0.44, 0.54, playhead));
     oldUI.style.display = oldUI.style.opacity > 0.01 ? 'flex' : 'none';
 
-    /* ── VOXEL WORLD ───────────────────────────────────────────
-     *
-     * Wider band (0.85→1.00 instead of 0.88→1.00) gives the
-     * camera more room to travel — feels less rushed.
-     * Talks to voxel-world.js via window.setVoxelProgress().
-     * ───────────────────────────────────────────────────────── */
-    const voxelProgress = smootherStep(0.88, 0.99, playhead);
-    if (typeof window.setVoxelProgress === "function") {
+    /* EARTH → WORLD — the voxel scene crossfades in while Earth still fills
+       the frame, so the cut reads as flying into the planet. */
+    const voxelProgress = smootherStep(0.90, 0.995, playhead);
+    if (typeof window.setVoxelProgress === 'function') {
         window.setVoxelProgress(voxelProgress);
     }
 
     requestAnimationFrame(render);
 }
 
-/* ── INIT ─────────────────────────────────────────────────────── */
-window.addEventListener("scroll", updateTarget, { passive: true });
-window.addEventListener("resize", () => {
-    resize();
-    updateTarget();
-});
-
 resize();
-updateTarget();
+readNativeScroll();
 requestAnimationFrame(render);
