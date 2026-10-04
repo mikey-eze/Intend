@@ -630,7 +630,7 @@ function surfaceY(x, z) {
  * yaw = PI, which faced the player at the *south* wall — away from the Titan
  * event and against a row of houses.
  */
-const SPAWN = { x: -14, y: 0, z: -9, yaw: 0 };
+const SPAWN = { x: 0, y: 0, z: 0, yaw: 0 };
 
 const player = {
     // Position = feet position
@@ -1770,7 +1770,7 @@ const townMats = {
     window:       new THREE.MeshLambertMaterial({ color: 0x8db3d0 }),
 };
 
-function buildHouse(x, z, w, d, h) {
+function buildHouse(x, z, w, d, h, style = 'normal') {
     const baseY = heightAt(Math.round(x), Math.round(z));
 
     // Main walls (hollow box)
@@ -1783,6 +1783,17 @@ function buildHouse(x, z, w, d, h) {
                     queueBlock(x + dx, baseY + dy, z + dz, mat, true);
                 }
             }
+        }
+    }
+
+    // Half-timbered facade detail (vertical beams)
+    if (style === 'timbered' && w >= 4) {
+        for (let dy = 1; dy < h; dy++) {
+            // Front facade
+            queueBlock(x + Math.floor(w / 3), baseY + dy, z, townMats.woodFrame, true);
+            queueBlock(x + Math.floor(2 * w / 3), baseY + dy, z, townMats.woodFrame, true);
+            // Back facade
+            queueBlock(x + Math.floor(w / 3), baseY + dy, z + d - 1, townMats.woodFrame, true);
         }
     }
 
@@ -1803,11 +1814,13 @@ function buildHouse(x, z, w, d, h) {
         }
     }
 
-    // Windows on upper walls (simple)
+    // Windows on upper walls
     if (h >= 2) {
         // Front face windows
         for (let dx = 1; dx < w - 1; dx += 2) {
-            queueBlock(x + dx, baseY + h - 1, z, townMats.window, false);
+            if (dx !== Math.floor(w / 3) && dx !== Math.floor(2 * w / 3)) {
+                queueBlock(x + dx, baseY + h - 1, z, townMats.window, false);
+            }
         }
         // Side windows
         for (let dz = 1; dz < d - 1; dz += 2) {
@@ -1815,50 +1828,174 @@ function buildHouse(x, z, w, d, h) {
             queueBlock(x + w - 1, baseY + h - 1, z + dz, townMats.window, false);
         }
     }
+
+    // Additional floor windows for tall buildings
+    if (h >= 4) {
+        for (let dy = 2; dy < h - 1; dy += 2) {
+            for (let dx = 1; dx < w - 1; dx += 2) {
+                queueBlock(x + dx, baseY + dy, z, townMats.window, false);
+            }
+        }
+    }
+}
+
+function buildCanal(x1, z1, x2, z2, width = 3, depth = 2) {
+    // Build a canal/river section
+    const steps = Math.max(Math.abs(x2 - x1), Math.abs(z2 - z1)) + 1;
+    for (let i = 0; i <= steps; i++) {
+        const t = i / steps;
+        const cx = Math.round(x1 + (x2 - x1) * t);
+        const cz = Math.round(z1 + (z2 - z1) * t);
+
+        for (let dx = -width; dx <= width; dx++) {
+            for (let dz = -width; dz <= width; dz++) {
+                if (dx * dx + dz * dz <= width * width) {
+                    const wx = cx + dx;
+                    const wz = cz + dz;
+                    const baseH = heightAt(wx, wz);
+
+                    // Carve out canal bed
+                    for (let dy = 0; dy < depth; dy++) {
+                        queueBlock(wx, baseH - depth + dy, wz, MAT.dirt);
+                    }
+                    // Add water
+                    queueBlock(wx, baseH - depth + 1, wz, MAT.water);
+                    queueBlock(wx, baseH - depth + 2, wz, MAT.water);
+                }
+            }
+        }
+    }
+}
+
+function buildBridge(x, z, length, direction = 'z') {
+    const baseY = heightAt(x, z) + 1;
+    const bridgeMat = MAT.wood;
+
+    if (direction === 'z') {
+        for (let dz = 0; dz < length; dz++) {
+            for (let dx = -2; dx <= 2; dx++) {
+                queueBlock(x + dx, baseY, z + dz, bridgeMat, true);
+                // Side rails
+                if (Math.abs(dx) === 2) {
+                    queueBlock(x + dx, baseY + 1, z + dz, bridgeMat, false);
+                }
+            }
+        }
+    } else {
+        for (let dx = 0; dx < length; dx++) {
+            for (let dz = -2; dz <= 2; dz++) {
+                queueBlock(x + dx, baseY, z + dz, bridgeMat, true);
+                if (Math.abs(dz) === 2) {
+                    queueBlock(x + dx, baseY + 1, z + dz, bridgeMat, false);
+                }
+            }
+        }
+    }
 }
 
 function buildShinganshina() {
-    // Dense town layout based on references
-    // Main plaza/square in center
+    // Shiganshina District — rebuilt from episode 1 reference images
+    // Layout: dense medieval German town with main street, canal, varied buildings
 
-    // North district (cluster 1)
-    buildHouse(-10, -4, 4, 5, 3);
-    buildHouse(-4, -6, 5, 4, 3);
-    buildHouse(2, -5, 4, 4, 4);
-    buildHouse(-8, 2, 3, 3, 3);
-    buildHouse(-2, 1, 4, 3, 3);
+    // === NORTH RESIDENTIAL QUARTER ===
+    // Dense housing north of center
+    buildHouse(-20, -18, 4, 5, 3);
+    buildHouse(-14, -19, 5, 4, 3);
+    buildHouse(-8, -18, 4, 4, 2);
+    buildHouse(-2, -17, 3, 5, 3);
+    buildHouse(4, -19, 4, 4, 3);
+    buildHouse(10, -18, 5, 5, 4);
+    buildHouse(16, -17, 4, 4, 3);
 
-    // East district (cluster 2)
+    buildHouse(-22, -12, 3, 4, 3);
+    buildHouse(-16, -13, 4, 4, 2);
+    buildHouse(-10, -12, 5, 5, 3);
+    buildHouse(-3, -11, 4, 4, 4); // Taller
+    buildHouse(3, -13, 4, 5, 3);
+    buildHouse(9, -12, 5, 4, 3);
+    buildHouse(15, -11, 4, 4, 2);
+    buildHouse(20, -13, 3, 4, 3);
+
+    // === MAIN STREET / CENTRAL AREA ===
+    // Main street runs east-west around z = -6 to -2
+    buildHouse(-22, -8, 4, 4, 3);
+    buildHouse(-22, -2, 3, 4, 2);
+    buildHouse(-16, -7, 5, 4, 4); // Corner building
+    buildHouse(-10, -8, 4, 3, 3);
+    buildHouse(-10, -3, 4, 4, 2);
+
+    // East side of main street
     buildHouse(8, -8, 5, 4, 3);
-    buildHouse(14, -6, 4, 5, 3);
-    buildHouse(12, 2, 4, 4, 4);
-    buildHouse(8, 4, 3, 4, 3);
+    buildHouse(8, -2, 4, 3, 3);
+    buildHouse(14, -7, 4, 5, 4);
+    buildHouse(20, -8, 3, 4, 3);
+    buildHouse(20, -2, 4, 4, 2);
 
-    // South district (cluster 3)
-    buildHouse(-12, 8, 4, 5, 3);
-    buildHouse(-4, 10, 5, 4, 3);
-    buildHouse(4, 9, 4, 4, 3);
-    buildHouse(10, 8, 3, 5, 3);
+    // === EAST DISTRICT ===
+    // Eastern buildings
+    buildHouse(12, -4, 3, 4, 3);
+    buildHouse(12, 2, 4, 3, 2);
+    buildHouse(22, -1, 3, 4, 3);
+    buildHouse(22, 5, 4, 3, 2);
 
-    // West district (cluster 4)
-    buildHouse(-18, -2, 4, 4, 3);
-    buildHouse(-16, 5, 5, 4, 3);
-    buildHouse(-20, 12, 4, 3, 3);
+    // === SOUTH RESIDENTIAL QUARTER ===
+    buildHouse(-20, 2, 4, 4, 3);
+    buildHouse(-14, 1, 5, 5, 3);
+    buildHouse(-8, 2, 4, 4, 4); // Taller landmark
+    buildHouse(-2, 1, 5, 4, 3);
+    buildHouse(4, 2, 4, 5, 3);
 
-    // Taller central structures (landmarks)
-    buildHouse(-1, 5, 3, 3, 5);  // Tower-like
-    buildHouse(6, 6, 3, 3, 4);
+    buildHouse(-22, 7, 3, 4, 2);
+    buildHouse(-16, 8, 4, 4, 3);
+    buildHouse(-10, 7, 5, 5, 3);
+    buildHouse(-4, 9, 4, 4, 2);
+    buildHouse(2, 8, 4, 5, 3);
+    buildHouse(8, 7, 5, 4, 4); // Tall
+    buildHouse(14, 9, 4, 4, 3);
 
-    // Market area (loose cluster)
-    buildHouse(-6, -12, 4, 3, 2);
-    buildHouse(2, -14, 5, 4, 2);
-    buildHouse(8, -12, 3, 4, 2);
+    // === WEST QUARTER ===
+    buildHouse(-18, -5, 4, 4, 3);
+    buildHouse(-18, 1, 3, 5, 2);
+    buildHouse(-18, 7, 4, 4, 3);
 
-    // Waterfront settlement (near water)
-    buildHouse(-16, -18, 4, 3, 2);
-    buildHouse(-8, -20, 4, 4, 2);
-    buildHouse(0, -18, 3, 4, 2);
-    buildHouse(10, -16, 4, 3, 2);
+    // === CENTRAL LANDMARKS ===
+    // Town center / plaza area
+    buildHouse(-5, -1, 3, 3, 5); // Watchtower
+    buildHouse(0, 4, 4, 4, 4);   // Central hall
+
+    // === ADDITIONAL DENSE HOUSING ===
+    // Fill in gaps for density
+    buildHouse(-19, -15, 3, 3, 2);
+    buildHouse(-12, -16, 3, 4, 3);
+    buildHouse(-5, -15, 4, 3, 2);
+    buildHouse(1, -15, 3, 3, 3);
+    buildHouse(7, -16, 3, 4, 2);
+    buildHouse(13, -15, 4, 3, 3);
+
+    buildHouse(-17, -10, 3, 3, 2);
+    buildHouse(-7, -10, 3, 4, 3);
+    buildHouse(1, -9, 3, 3, 2);
+    buildHouse(11, -10, 3, 3, 3);
+    buildHouse(17, -9, 3, 4, 2);
+
+    buildHouse(-13, -5, 3, 3, 3);
+    buildHouse(-7, -4, 3, 4, 2);
+    buildHouse(5, -5, 3, 3, 3);
+    buildHouse(11, -4, 3, 3, 2);
+
+    buildHouse(-19, 4, 3, 3, 2);
+    buildHouse(-13, 4, 3, 4, 3);
+    buildHouse(-6, 5, 3, 3, 2);
+    buildHouse(10, 4, 3, 4, 2);
+    buildHouse(16, 5, 3, 3, 3);
+
+    buildHouse(-19, 10, 3, 3, 2);
+    buildHouse(-12, 11, 4, 3, 2);
+    buildHouse(-6, 11, 3, 3, 3);
+    buildHouse(0, 10, 3, 4, 2);
+    buildHouse(6, 11, 3, 3, 2);
+    buildHouse(11, 10, 4, 3, 3);
+    buildHouse(17, 11, 3, 3, 2);
 }
 
 buildShinganshina();
@@ -1930,7 +2067,7 @@ function clampToDistrict() {
 
 buildTerrain();
 buildWall();
-buildTrees();
+// buildTrees(); // Removed - no trees in Shiganshina
 buildPortal();
 flushBlocks();
 
