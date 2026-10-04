@@ -41,20 +41,21 @@ renderer.shadowMap.enabled = false; // no shadows — perf first
    SCENE + LIGHTING + FOG
 ═══════════════════════════════════════════════════════════════════ */
 const scene = new THREE.Scene();
-scene.background = new THREE.Color(0x7ea8c8);
-scene.fog = new THREE.FogExp2(0x8ab4cc, 0.032);
+// Warm golden sky from AOT references
+scene.background = new THREE.Color(0xd4c4a0);
+scene.fog = new THREE.FogExp2(0xc8b89a, 0.018);
 
-// Hemisphere (sky/ground)
-const hemi = new THREE.HemisphereLight(0xc8e0ff, 0x5a7045, 1.4);
+// Hemisphere — warm overhead, warm ground reflection
+const hemi = new THREE.HemisphereLight(0xffe8c0, 0xc4a882, 1.6);
 scene.add(hemi);
 
-// Directional (sun)
-const sun = new THREE.DirectionalLight(0xfff5d0, 2.2);
-sun.position.set(-22, 35, 14);
+// Directional (warm afternoon sun)
+const sun = new THREE.DirectionalLight(0xffd8a0, 2.8);
+sun.position.set(-18, 32, 22);
 scene.add(sun);
 
-// Ambient fill — prevents pitch-black undersides
-const amb = new THREE.AmbientLight(0x304050, 0.6);
+// Ambient fill — warm golden wash
+const amb = new THREE.AmbientLight(0xa08860, 0.9);
 scene.add(amb);
 
 /* ═══════════════════════════════════════════════════════════════════
@@ -1758,90 +1759,130 @@ window.__saifTestProbe = function () {
    SHIGANSHINA — Reference-driven rebuild
 ═══════════════════════════════════════════════════════════════════ */
 
-// Materials for town
+// Materials for Shiganshina town — AOT-accurate colors
 const townMats = {
-    wallTan:      new THREE.MeshLambertMaterial({ color: 0xd4a574 }),
-    wallDark:     new THREE.MeshLambertMaterial({ color: 0xa0826d }),
-    roofBrown:    new THREE.MeshLambertMaterial({ color: 0x8b5a2b }),
-    roofRed:      new THREE.MeshLambertMaterial({ color: 0xc85a3f }),
-    roofOrange:   new THREE.MeshLambertMaterial({ color: 0xd4a574 }),
-    woodFrame:    new THREE.MeshLambertMaterial({ color: 0x5c4033 }),
-    doorFrame:    new THREE.MeshLambertMaterial({ color: 0x4a3728 }),
-    window:       new THREE.MeshLambertMaterial({ color: 0x8db3d0 }),
+    wallCream:     new THREE.MeshLambertMaterial({ color: 0xe8d4b8 }),  // cream plaster
+    wallTan:       new THREE.MeshLambertMaterial({ color: 0xc4a882 }),  // tan plaster
+    wallStone:     new THREE.MeshLambertMaterial({ color: 0x9a8a78 }),  // stone foundation
+    timberDark:    new THREE.MeshLambertMaterial({ color: 0x3e2a1c }),  // dark brown timber
+    timberBrown:   new THREE.MeshLambertMaterial({ color: 0x5c4028 }),  // medium brown
+    roofTerra:     new THREE.MeshLambertMaterial({ color: 0xa04830 }),  // terracotta red
+    roofBrown:     new THREE.MeshLambertMaterial({ color: 0x8b5a2b }),  // brown tile
+    roofOrange:    new THREE.MeshLambertMaterial({ color: 0xc87850 }),  // orange tile
+    window:        new THREE.MeshLambertMaterial({ color: 0x2a3a48 }),  // dark window
+    doorDark:      new THREE.MeshLambertMaterial({ color: 0x2e1f14 }),  // dark door
 };
 
-function buildHouse(x, z, w, d, h, style = 'normal') {
+/**
+ * Build timber-frame house — AOT-style medieval German architecture
+ * @param {number} x - X position
+ * @param {number} z - Z position
+ * @param {number} w - Width
+ * @param {number} d - Depth
+ * @param {number} h - Height (stories)
+ * @param {string} style - 'normal', 'timber', 'stone'
+ */
+function buildHouse(x, z, w, d, h, style = 'timber') {
     const baseY = heightAt(Math.round(x), Math.round(z));
 
-    // Main walls (hollow box)
+    // Stone foundation layer
     for (let dx = 0; dx < w; dx++) {
         for (let dz = 0; dz < d; dz++) {
-            for (let dy = 0; dy < h; dy++) {
+            queueBlock(x + dx, baseY, z + dz, townMats.wallStone, true);
+        }
+    }
+
+    // Main structure — hollow box with walls
+    for (let dx = 0; dx < w; dx++) {
+        for (let dz = 0; dz < d; dz++) {
+            for (let dy = 1; dy <= h; dy++) {
                 const isPerimeter = (dx === 0 || dx === w - 1 || dz === 0 || dz === d - 1);
-                if (isPerimeter || dy === 0) {
-                    const mat = (dy === 0) ? townMats.wallDark : townMats.wallTan;
-                    queueBlock(x + dx, baseY + dy, z + dz, mat, true);
+                if (isPerimeter) {
+                    const wallMat = (Math.random() > 0.5) ? townMats.wallCream : townMats.wallTan;
+                    queueBlock(x + dx, baseY + dy, z + dz, wallMat, true);
                 }
             }
         }
     }
 
-    // Half-timbered facade detail (vertical beams)
-    if (style === 'timbered' && w >= 4) {
-        for (let dy = 1; dy < h; dy++) {
-            // Front facade
-            queueBlock(x + Math.floor(w / 3), baseY + dy, z, townMats.woodFrame, true);
-            queueBlock(x + Math.floor(2 * w / 3), baseY + dy, z, townMats.woodFrame, true);
-            // Back facade
-            queueBlock(x + Math.floor(w / 3), baseY + dy, z + d - 1, townMats.woodFrame, true);
+    // Timber frame pattern — vertical posts and horizontal beams
+    if (style === 'timber' || style === 'normal') {
+        // Vertical corner posts
+        for (let dy = 1; dy <= h; dy++) {
+            queueBlock(x, baseY + dy, z, townMats.timberDark, true);
+            queueBlock(x + w - 1, baseY + dy, z, townMats.timberDark, true);
+            queueBlock(x, baseY + dy, z + d - 1, townMats.timberDark, true);
+            queueBlock(x + w - 1, baseY + dy, z + d - 1, townMats.timberDark, true);
+        }
+
+        // Mid-wall vertical posts on front/back if wide enough
+        if (w >= 4) {
+            for (let dy = 1; dy <= h; dy++) {
+                queueBlock(x + Math.floor(w / 2), baseY + dy, z, townMats.timberBrown, true);
+                queueBlock(x + Math.floor(w / 2), baseY + dy, z + d - 1, townMats.timberBrown, true);
+            }
+        }
+
+        // Horizontal beams at floor levels
+        for (let dy = 1; dy <= h; dy++) {
+            // Front face beam
+            for (let dx = 0; dx < w; dx++) {
+                queueBlock(x + dx, baseY + dy, z, townMats.timberBrown, true);
+            }
+            // Back face beam
+            for (let dx = 0; dx < w; dx++) {
+                queueBlock(x + dx, baseY + dy, z + d - 1, townMats.timberBrown, true);
+            }
         }
     }
 
-    // Roof — angled/sloped appearance
-    const roofColors = [townMats.roofBrown, townMats.roofRed, townMats.roofOrange];
-    const roofColor = roofColors[Math.floor(Math.random() * roofColors.length)];
+    // Windows — dark openings on facades
+    if (h >= 2 && w >= 3) {
+        for (let floor = 2; floor <= h; floor++) {
+            // Front facade windows
+            for (let dx = 1; dx < w - 1; dx += 2) {
+                queueBlock(x + dx, baseY + floor, z, townMats.window, false);
+            }
+            // Side windows if deep enough
+            if (d >= 4) {
+                for (let dz = 1; dz < d - 1; dz += 2) {
+                    queueBlock(x, baseY + floor, z + dz, townMats.window, false);
+                    queueBlock(x + w - 1, baseY + floor, z + dz, townMats.window, false);
+                }
+            }
+        }
+    }
 
+    // Door on ground floor
+    if (w >= 3) {
+        queueBlock(x + Math.floor(w / 2), baseY + 1, z, townMats.doorDark, false);
+    }
+
+    // Sloped terracotta tile roof
+    const roofMats = [townMats.roofTerra, townMats.roofBrown, townMats.roofOrange];
+    const roofMat = roofMats[Math.floor(Math.random() * roofMats.length)];
+
+    const roofH = Math.max(2, Math.floor(w / 2));
     for (let dx = -1; dx <= w; dx++) {
         for (let dz = -1; dz <= d; dz++) {
-            // Peak in center, slopes to edges
-            const distX = Math.abs(dx - w / 2);
-            const distZ = Math.abs(dz - d / 2);
-            const roofH = Math.max(0, 2 - Math.max(distX, distZ) * 0.5);
+            // Ridge-style peaked roof
+            const distFromCenterX = Math.abs(dx - w / 2);
+            const elevate = Math.max(0, roofH - Math.floor(distFromCenterX));
 
-            if (roofH > 0) {
-                queueBlock(x + dx, baseY + h + Math.floor(roofH), z + dz, roofColor, true);
-            }
-        }
-    }
-
-    // Windows on upper walls
-    if (h >= 2) {
-        // Front face windows
-        for (let dx = 1; dx < w - 1; dx += 2) {
-            if (dx !== Math.floor(w / 3) && dx !== Math.floor(2 * w / 3)) {
-                queueBlock(x + dx, baseY + h - 1, z, townMats.window, false);
-            }
-        }
-        // Side windows
-        for (let dz = 1; dz < d - 1; dz += 2) {
-            queueBlock(x, baseY + h - 1, z + dz, townMats.window, false);
-            queueBlock(x + w - 1, baseY + h - 1, z + dz, townMats.window, false);
-        }
-    }
-
-    // Additional floor windows for tall buildings
-    if (h >= 4) {
-        for (let dy = 2; dy < h - 1; dy += 2) {
-            for (let dx = 1; dx < w - 1; dx += 2) {
-                queueBlock(x + dx, baseY + dy, z, townMats.window, false);
+            if (elevate > 0 && dx >= 0 && dx < w && dz >= -1 && dz <= d) {
+                for (let ry = 0; ry < elevate; ry++) {
+                    queueBlock(x + dx, baseY + h + 1 + ry, z + dz, roofMat, true);
+                }
             }
         }
     }
 }
 
-function buildCanal(x1, z1, x2, z2, width = 3, depth = 2) {
-    // Build a canal/river section
-    const steps = Math.max(Math.abs(x2 - x1), Math.abs(z2 - z1)) + 1;
+/**
+ * Build canal — carved waterway with stone banks
+ */
+function buildCanal(x1, z1, x2, z2, width = 2) {
+    const steps = Math.max(Math.abs(x2 - x1), Math.abs(z2 - z1)) * 2;
     for (let i = 0; i <= steps; i++) {
         const t = i / steps;
         const cx = Math.round(x1 + (x2 - x1) * t);
@@ -1849,58 +1890,220 @@ function buildCanal(x1, z1, x2, z2, width = 3, depth = 2) {
 
         for (let dx = -width; dx <= width; dx++) {
             for (let dz = -width; dz <= width; dz++) {
-                if (dx * dx + dz * dz <= width * width) {
+                const dist = Math.abs(dx) + Math.abs(dz);
+                if (dist <= width * 1.2) {
                     const wx = cx + dx;
                     const wz = cz + dz;
                     const baseH = heightAt(wx, wz);
 
-                    // Carve out canal bed
-                    for (let dy = 0; dy < depth; dy++) {
-                        queueBlock(wx, baseH - depth + dy, wz, MAT.dirt);
+                    // Dig down 2 blocks
+                    solidSet.delete(`${wx},${baseH},${wz}`);
+                    solidSet.delete(`${wx},${baseH - 1},${wz}`);
+
+                    // Stone banks at edges
+                    if (dist >= width) {
+                        queueBlock(wx, baseH - 1, wz, townMats.wallStone, true);
                     }
-                    // Add water
-                    queueBlock(wx, baseH - depth + 1, wz, MAT.water);
-                    queueBlock(wx, baseH - depth + 2, wz, MAT.water);
+
+                    // Water fill
+                    queueBlock(wx, baseH - 2, wz, MAT.water);
+                    queueBlock(wx, baseH - 1, wz, MAT.water);
                 }
             }
         }
     }
 }
 
-function buildBridge(x, z, length, direction = 'z') {
+/**
+ * Build wooden bridge across canal
+ */
+function buildBridge(x, z, length, direction = 'x') {
     const baseY = heightAt(x, z) + 1;
-    const bridgeMat = MAT.wood;
 
-    if (direction === 'z') {
-        for (let dz = 0; dz < length; dz++) {
-            for (let dx = -2; dx <= 2; dx++) {
-                queueBlock(x + dx, baseY, z + dz, bridgeMat, true);
+    if (direction === 'x') {
+        for (let dx = 0; dx < length; dx++) {
+            for (let dz = -1; dz <= 1; dz++) {
+                queueBlock(x + dx, baseY, z + dz, MAT.wood, true);
                 // Side rails
-                if (Math.abs(dx) === 2) {
-                    queueBlock(x + dx, baseY + 1, z + dz, bridgeMat, false);
+                if (dz === -1 || dz === 1) {
+                    queueBlock(x + dx, baseY + 1, z + dz, MAT.wood, false);
                 }
             }
         }
     } else {
-        for (let dx = 0; dx < length; dx++) {
-            for (let dz = -2; dz <= 2; dz++) {
-                queueBlock(x + dx, baseY, z + dz, bridgeMat, true);
-                if (Math.abs(dz) === 2) {
-                    queueBlock(x + dx, baseY + 1, z + dz, bridgeMat, false);
+        for (let dz = 0; dz < length; dz++) {
+            for (let dx = -1; dx <= 1; dx++) {
+                queueBlock(x + dx, baseY, z + dz, MAT.wood, true);
+                if (dx === -1 || dx === 1) {
+                    queueBlock(x + dx, baseY + 1, z + dz, MAT.wood, false);
                 }
             }
         }
     }
 }
 
-function buildShinganshina() {
-    // Shiganshina District — rebuilt from episode 1 reference images
-    // Layout: dense medieval German town with main street, canal, varied buildings
+/**
+ * Build town tree — placed throughout residential areas
+ */
+function buildTownTree(x, z, height = 4) {
+    const baseY = heightAt(Math.round(x), Math.round(z));
 
-    // === NORTH RESIDENTIAL QUARTER ===
-    // Dense housing north of center
-    buildHouse(-20, -18, 4, 5, 3);
-    buildHouse(-14, -19, 5, 4, 3);
+    // Trunk
+    for (let dy = 0; dy < height; dy++) {
+        queueBlock(x, baseY + 1 + dy, z, MAT.wood, true);
+    }
+
+    // Leaf crown
+    const crownY = baseY + height;
+    for (let dx = -1; dx <= 1; dx++) {
+        for (let dz = -1; dz <= 1; dz++) {
+            for (let dy = 0; dy <= 2; dy++) {
+                const dist = Math.abs(dx) + Math.abs(dz) + Math.abs(dy - 1);
+                if (dist <= 2.5) {
+                    const leafMat = (dy < 1) ? MAT.leavesDeep : MAT.leaves;
+                    queueBlock(x + dx, crownY + dy, z + dz, leafMat);
+                }
+            }
+        }
+    }
+}
+
+/**
+ * Build dense Shiganshina District — AOT Episode 1 reference-accurate
+ * Dense medieval German town with timber-frame houses, canals, bridges, trees
+ */
+function buildShinganshina() {
+    // === MAIN RESIDENTIAL BLOCKS (dense clusters) ===
+
+    // Northwest block — dense housing
+    buildHouse(-22, -20, 4, 5, 3, 'timber');
+    buildHouse(-17, -21, 5, 4, 3, 'timber');
+    buildHouse(-11, -20, 4, 6, 4, 'timber'); // taller
+    buildHouse(-22, -14, 3, 4, 2, 'timber');
+    buildHouse(-18, -15, 4, 5, 3, 'timber');
+    buildHouse(-13, -14, 5, 4, 3, 'timber');
+    buildHouse(-22, -9, 4, 4, 3, 'timber');
+    buildHouse(-17, -8, 3, 5, 2, 'timber');
+    buildHouse(-12, -9, 4, 4, 3, 'timber');
+
+    // North-central block
+    buildHouse(-7, -20, 5, 5, 4, 'timber'); // landmark tall building
+    buildHouse(-1, -21, 4, 4, 3, 'timber');
+    buildHouse(4, -20, 5, 4, 3, 'timber');
+    buildHouse(-6, -15, 4, 5, 3, 'timber');
+    buildHouse(-1, -14, 3, 4, 2, 'timber');
+    buildHouse(3, -15, 4, 5, 3, 'timber');
+    buildHouse(-7, -9, 4, 4, 3, 'timber');
+    buildHouse(-2, -8, 5, 4, 3, 'timber');
+    buildHouse(3, -9, 4, 4, 2, 'timber');
+
+    // Northeast block
+    buildHouse(9, -20, 4, 5, 3, 'timber');
+    buildHouse(14, -21, 5, 4, 4, 'timber'); // taller
+    buildHouse(19, -20, 4, 4, 3, 'timber');
+    buildHouse(8, -15, 4, 4, 2, 'timber');
+    buildHouse(13, -14, 5, 5, 3, 'timber');
+    buildHouse(19, -15, 4, 4, 3, 'timber');
+    buildHouse(9, -9, 3, 5, 3, 'timber');
+    buildHouse(14, -8, 4, 4, 2, 'timber');
+    buildHouse(19, -9, 4, 4, 3, 'timber');
+
+    // === CANAL DISTRICT (east side) ===
+    // Main canal running north-south
+    buildCanal(16, -24, 16, 8, 2);
+
+    // Canal-side buildings
+    buildHouse(11, -18, 3, 4, 3, 'timber');
+    buildHouse(11, -13, 4, 3, 2, 'timber');
+    buildHouse(11, -8, 3, 4, 3, 'timber');
+    buildHouse(11, -3, 4, 4, 3, 'timber');
+    buildHouse(11, 2, 3, 4, 2, 'timber');
+
+    buildHouse(19, -12, 4, 4, 3, 'timber');
+    buildHouse(19, -6, 3, 5, 2, 'timber');
+    buildHouse(19, 0, 4, 4, 3, 'timber');
+    buildHouse(19, 5, 3, 4, 2, 'timber');
+
+    // Bridges across canal
+    buildBridge(14, -18, 5, 'x');
+    buildBridge(14, -10, 5, 'x');
+    buildBridge(14, -2, 5, 'x');
+    buildBridge(14, 5, 5, 'x');
+
+    // === CENTRAL PLAZA/MARKET ===
+    buildHouse(-3, -4, 6, 6, 4, 'timber'); // central hall/market
+    buildHouse(-9, -2, 4, 3, 2, 'timber');
+    buildHouse(4, -3, 3, 4, 2, 'timber');
+    buildHouse(-4, 2, 3, 3, 2, 'timber');
+    buildHouse(1, 3, 4, 4, 3, 'timber');
+
+    // === SOUTH RESIDENTIAL ===
+    buildHouse(-22, 3, 4, 4, 3, 'timber');
+    buildHouse(-17, 2, 5, 5, 3, 'timber');
+    buildHouse(-11, 3, 4, 4, 2, 'timber');
+    buildHouse(-22, 8, 3, 4, 2, 'timber');
+    buildHouse(-17, 9, 4, 4, 3, 'timber');
+    buildHouse(-12, 8, 5, 4, 3, 'timber');
+
+    buildHouse(-6, 5, 4, 5, 3, 'timber');
+    buildHouse(-1, 6, 3, 4, 2, 'timber');
+    buildHouse(4, 5, 4, 4, 3, 'timber');
+    buildHouse(-7, 10, 3, 4, 2, 'timber');
+    buildHouse(-2, 11, 4, 4, 3, 'timber');
+    buildHouse(3, 10, 4, 5, 3, 'timber');
+
+    // === SMALLER INFILL BUILDINGS (density) ===
+    buildHouse(-15, -18, 3, 3, 2, 'timber');
+    buildHouse(-9, -17, 3, 3, 2, 'timber');
+    buildHouse(-3, -17, 3, 3, 2, 'timber');
+    buildHouse(2, -16, 3, 3, 2, 'timber');
+    buildHouse(7, -17, 3, 3, 2, 'timber');
+    buildHouse(12, -16, 3, 3, 2, 'timber');
+
+    buildHouse(-19, -11, 3, 3, 2, 'timber');
+    buildHouse(-14, -12, 3, 3, 2, 'timber');
+    buildHouse(-8, -11, 3, 3, 2, 'timber');
+    buildHouse(-3, -12, 3, 3, 3, 'timber');
+    buildHouse(1, -11, 3, 3, 2, 'timber');
+    buildHouse(6, -12, 3, 3, 2, 'timber');
+    buildHouse(10, -11, 3, 3, 2, 'timber');
+    buildHouse(17, -11, 3, 3, 2, 'timber');
+
+    buildHouse(-16, -5, 3, 3, 2, 'timber');
+    buildHouse(-11, -6, 3, 3, 2, 'timber');
+    buildHouse(-6, -5, 3, 3, 2, 'timber');
+    buildHouse(5, -6, 3, 3, 2, 'timber');
+    buildHouse(10, -5, 3, 3, 2, 'timber');
+
+    buildHouse(-19, 1, 3, 3, 2, 'timber');
+    buildHouse(-14, 0, 3, 3, 2, 'timber');
+    buildHouse(-8, 1, 3, 3, 2, 'timber');
+    buildHouse(7, 1, 3, 3, 2, 'timber');
+    buildHouse(12, 0, 3, 3, 2, 'timber');
+
+    buildHouse(-15, 6, 3, 3, 2, 'timber');
+    buildHouse(-9, 7, 3, 3, 2, 'timber');
+    buildHouse(8, 7, 3, 3, 2, 'timber');
+    buildHouse(13, 6, 3, 3, 2, 'timber');
+    buildHouse(17, 8, 3, 3, 2, 'timber');
+
+    // === TREES scattered throughout town ===
+    buildTownTree(-20, -17, 4);
+    buildTownTree(-13, -19, 3);
+    buildTownTree(-8, -13, 4);
+    buildTownTree(-15, -7, 3);
+    buildTownTree(-10, -2, 4);
+    buildTownTree(-18, 5, 3);
+    buildTownTree(-11, 10, 4);
+    buildTownTree(-4, 8, 3);
+    buildTownTree(2, -14, 4);
+    buildTownTree(7, -7, 3);
+    buildTownTree(1, 1, 4);
+    buildTownTree(8, 9, 3);
+    buildTownTree(15, -5, 4);
+    buildTownTree(21, 2, 3);
+    buildTownTree(18, 10, 4);
+}
     buildHouse(-8, -18, 4, 4, 2);
     buildHouse(-2, -17, 3, 5, 3);
     buildHouse(4, -19, 4, 4, 3);
