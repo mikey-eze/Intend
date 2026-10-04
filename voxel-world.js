@@ -631,7 +631,7 @@ function surfaceY(x, z) {
  * yaw = PI, which faced the player at the *south* wall — away from the Titan
  * event and against a row of houses.
  */
-const SPAWN = { x: 0, y: 0, z: 0, yaw: 0 };
+const SPAWN = { x: -16, y: 0, z: 0, yaw: 0 };
 
 const player = {
     // Position = feet position
@@ -2103,16 +2103,8 @@ function buildShinganshina() {
     buildTownTree(15, -5, 4);
     buildTownTree(21, 2, 3);
     buildTownTree(18, 10, 4);
-}
-    buildHouse(-8, -18, 4, 4, 2);
-    buildHouse(-2, -17, 3, 5, 3);
-    buildHouse(4, -19, 4, 4, 3);
-    buildHouse(10, -18, 5, 5, 4);
-    buildHouse(16, -17, 4, 4, 3);
 
-    buildHouse(-22, -12, 3, 4, 3);
-    buildHouse(-16, -13, 4, 4, 2);
-    buildHouse(-10, -12, 5, 5, 3);
+    // === MAIN STREET / CENTRAL AREA ===
     buildHouse(-3, -11, 4, 4, 4); // Taller
     buildHouse(3, -13, 4, 5, 3);
     buildHouse(9, -12, 5, 4, 3);
