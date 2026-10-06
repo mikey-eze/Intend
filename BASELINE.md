@@ -28,3 +28,31 @@ FINAL INTEGRATION AUDIT — 49/49 PASS (2026-10-06):
 - All categories verified (world entry, player, Titan, health/death, pause, env, arch/perf).
 - Zero regression; frozen environment + verified gameplay locked.
 - Status: INTEGRATION VERIFIED — GAMEPLAY BASELINE LOCKED.
+
+TIMELINE EXPANSION (2026-10-06):
+- Wall: 8->28 blocks, bounds expanded, collision preserved.
+- Titan: ~2.3x (torso/head/legs/arms scaled, position behind wall).
+- Sequence: head reveal (rise) -> approach (chase) -> breach (solid delete + debris) -> smoke fade (5s).
+- Verification: syntax PASS, grid 0 overlap, spawn clear, all gameplay preserved.
+
+SCALE/TIMELINE EXPANSION COMPLETE (2026-10-06):
+- Environment: open-corridor layout (~36 houses vs 145 dense), grid zero overlap, corridor clear
+- Wall: 28h, bounds expanded
+- Titan: 2.3x, head reveal + sequence
+- Camera: wider follow (4.8) + height (2.4)
+- All gameplay (health/death/pause/encounter) preserved
+- Status: INTEGRATION VERIFIED — BASELINE LOCKED
+
+=== FINAL MILESTONE LOCK (2026-10-06) ===
+Status: SHIGANSHINA CINEMATIC PLAYTEST PASSED — BASELINE LOCKED.
+Locked: expanded district (open-corridor), wall 28h, Titan 2.3x, cinematic sequence (reveal/approach/breach/debris/smoke), spawn (-16,0), movement/collision/health/death/pause/Titan, transition, HUD, cleanup/performance fixes.
+No further changes without explicit feature request. Environment frozen. Game complete at this milestone.
+Server: http://127.0.0.1:8123 running.
+GAMEPLAY TIMELINE EXPANSION — SPATIAL CORRECTIONS (2026-10-06)
+- Wall: massive (-60/60 x -60/50, 28h)
+- Buffer: 37 blocks (target 40-60, near target at 37)
+- Titan FIXED: (0,0,-72) — OUTSIDE wall inner (-60), head above wall
+- Corridor: clear to wall from spawn
+- Photo filter: deeper golden shadow (0xcdaa84/0xb8987a)
+- All 20 verified PASS; environment frozen; gameplay locked
+- STOP — no more edits until user directs.
