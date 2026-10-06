@@ -1,0 +1,2 @@
+- [shiganshina-cleanup-order](shiganshina-cleanup-order.md) — hook
+- [Shiganshina baseline](BASELINE.md) — frozen environment reference

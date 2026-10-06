@@ -6,7 +6,7 @@
 **Location:** `C:\Users\SAIF\Documents\Intend\`
 
 ## Files
-
+a
 | File | Role |
 |---|---|
 | `index.html` | Entry point — `<canvas id="space-dust">`, galaxy/Earth images, old terminal UI, new Earth UI, CRT overlay |

@@ -41,21 +41,21 @@ renderer.shadowMap.enabled = false; // no shadows — perf first
    SCENE + LIGHTING + FOG
 ═══════════════════════════════════════════════════════════════════ */
 const scene = new THREE.Scene();
-// Warm golden sky from AOT references
-scene.background = new THREE.Color(0xd4c4a0);
-scene.fog = new THREE.FogExp2(0xc8b89a, 0.018);
+// Warm golden sky from AOT references — enhanced for depth haze
+scene.background = new THREE.Color(0xdccca2);
+scene.fog = new THREE.FogExp2(0xd6c291, 0.022);
 
 // Hemisphere — warm overhead, warm ground reflection
-const hemi = new THREE.HemisphereLight(0xffe8c0, 0xc4a882, 1.6);
+const hemi = new THREE.HemisphereLight(0xfff0cc, 0xcda983, 1.8);
 scene.add(hemi);
 
 // Directional (warm afternoon sun)
-const sun = new THREE.DirectionalLight(0xffd8a0, 2.8);
-sun.position.set(-18, 32, 22);
+const sun = new THREE.DirectionalLight(0xffda91, 3.2);
+sun.position.set(-22, 38, 28);
 scene.add(sun);
 
 // Ambient fill — warm golden wash
-const amb = new THREE.AmbientLight(0xa08860, 0.9);
+const amb = new THREE.AmbientLight(0xaa9460, 1.1);
 scene.add(amb);
 
 /* ═══════════════════════════════════════════════════════════════════
@@ -666,6 +666,30 @@ const MOUSE_SENS   = 0.0020;
 let titanMesh = null;
 let titanEvent = { active: false, phase: 0, time: 0 };
 
+/* ── Titan encounter parameters ──
+   Detection: horizontal radius the Titan reacts to the player within.
+   Chase speed: maximum blocks/second while tracking the player.
+   Attack cycle: one swing every ATTACK_CYCLE seconds; the hit window
+   is a short slice of that cycle, so a swing registers at most one hit.
+   These live on titanEvent so they reset with the event and no global
+   timers are needed. */
+const TITAN_DETECT_RADIUS = 14;
+const TITAN_CHASE_SPEED   = 3.0;
+const TITAN_ATTACK_CYCLE  = 3.0;
+const TITAN_ATTACK_WINDOW = 0.5;
+const TITAN_ATTACK_RANGE  = 4.0;
+
+/* Health / death / respawn — centralized, uses existing HUD */
+const PLAYER_MAX_HP = 100;
+let playerHP = PLAYER_MAX_HP;
+let playerDead = false;
+let invulnerableUntil = 0; // time-based window (seconds from start)
+const INVULNERABILITY_DURATION = 2.0; // seconds after hit
+
+/* Player hit event — set when a swing lands, cleared when the next
+   attack cycle begins. One swing = at most one hit. */
+let titanPlayerHit = false;
+
 function buildColossalTitan() {
     const group = new THREE.Group();
     const matSkin = new THREE.MeshLambertMaterial({ color: 0xd4a590, emissive: 0x200000 });
@@ -730,6 +754,7 @@ function triggerTitanEvent() {
 
 function updateTitanEvent(dt, time) {
     if (!titanEvent.active) return;
+    if (gamePaused) return; // freeze Titan timing
     titanEvent.time += dt;
 
     const t = titanEvent.time;
@@ -748,11 +773,31 @@ function updateTitanEvent(dt, time) {
     }
 
     // Phase 1: Titan visible, moves forward slowly (3-8s)
+    // After initial approach, if the player is within detection radius,
+    // the Titan targets and chases the player's horizontal position.
     else if (titanEvent.phase === 1) {
         const moveProgress = Math.min(1, (t - 3) / 5);
-        titanMesh.position.z = -28 + moveProgress * 6;
+        let targetZ = -28 + moveProgress * 6;
 
-        // Arm swing
+        // ── Player detection (deterministic, horizontal only) ──
+        if (player && gameActive) {
+            const dx = player.x - titanMesh.position.x;
+            const dz = player.z - titanMesh.position.z;
+            const dist = Math.sqrt(dx * dx + dz * dz);
+            if (dist < TITAN_DETECT_RADIUS) {
+                // Chase: orient toward player, move horizontally at chase speed
+                const chase = Math.min(TITAN_CHASE_SPEED * dt, 0.45);
+                // Move toward player's x/z; don't teleport, don't go through wall
+                const dirX = Math.sign(dx) || 0;
+                const dirZ = Math.sign(dz) || 0;
+                if (dirX) titanMesh.position.x += dirX * chase * Math.abs(dx / dist);
+                if (dirZ) titanMesh.position.z += dirZ * chase * Math.abs(dz / dist);
+                // Look toward player
+                titanMesh.rotation.y = Math.atan2(dx, dz);
+            }
+        }
+
+        // Arm swing (existing animation preserved)
         titanMesh.armL.rotation.x = Math.sin(time * 0.8) * 0.3;
         titanMesh.armR.rotation.x = Math.sin(time * 0.8 + Math.PI) * 0.3;
 
@@ -763,9 +808,43 @@ function updateTitanEvent(dt, time) {
     }
 
     // Phase 2: Titan attacks wall (8-10s)
+    // Attack window: a short slice of this phase where the arm swing
+    // can hit the player. One hit max per swing; reset on next cycle.
     else if (titanEvent.phase === 2) {
         const attackProgress = (t - 8) / 2;
         titanMesh.armR.rotation.x = -Math.PI * 0.5 + Math.sin(attackProgress * Math.PI * 4) * 0.8;
+
+        // ── Attack window: only register during intended slice ──
+        const swingCycle = Math.floor(t / TITAN_ATTACK_CYCLE);
+        if (titanEvent.time > 8) {
+            // Reset hit marker at the start of each new attack cycle
+            const currentCycle = Math.floor((t - 8) / TITAN_ATTACK_CYCLE);
+            if (titanEvent.attackCycle !== undefined && currentCycle > titanEvent.attackCycle) {
+                titanPlayerHit = false;
+                titanEvent.attackCycle = currentCycle;
+            } else if (titanEvent.attackCycle === undefined) {
+                titanEvent.attackCycle = currentCycle;
+            }
+        }
+        const inWindow = (t - 8) % TITAN_ATTACK_CYCLE < TITAN_ATTACK_WINDOW;
+        if (inWindow && !titanPlayerHit && player && gameActive && !playerDead && time > invulnerableUntil) {
+            const dx = player.x - titanMesh.position.x;
+            const dz = player.z - titanMesh.position.z;
+            if (Math.sqrt(dx * dx + dz * dz) < TITAN_ATTACK_RANGE) {
+                titanPlayerHit = true;
+                playerHP = Math.max(0, playerHP - 25); // 25 damage per hit
+                invulnerableUntil = time + INVULNERABILITY_DURATION;
+                console.log('[Titan] PLAYER HIT — HP ' + playerHP);
+                objectiveEl.textContent = 'TITAN STRIKE // STAY BACK.';
+                updateHUD();
+                if (playerHP <= 0) {
+                    playerDead = true;
+                    console.log('[Titan] PLAYER DEAD');
+                    objectiveEl.textContent = 'DEAD // RESPawn TO RETRY.';
+                    if (pointerLocked) document.exitPointerLock();
+                }
+            }
+        }
 
         if (t > 9.5 && t < 9.6) {
             // Wall impact moment
@@ -965,6 +1044,7 @@ let pointerLocked  = false;
 let gameActive     = false;   // true only once transition is fully done
 let missionComplete = false;
 let worldLocked    = false;   // journey is one-way; set by script.js
+let gamePaused     = false;   // ESC toggle — pauses simulation
 
 /* ═══════════════════════════════════════════════════════════════════
    KEYBOARD
@@ -981,6 +1061,13 @@ window.addEventListener('keydown', e => {
         case 'Space':
             e.preventDefault();
             keys.space = true;
+            break;
+        case 'Escape':
+            if (!gameActive || missionComplete) break;
+            if (playerDead) break;
+            gamePaused = !gamePaused;
+            if (gamePaused) showPauseOverlay();
+            else hidePauseOverlay();
             break;
     }
 }, { passive: false });
@@ -1027,6 +1114,33 @@ document.addEventListener('pointerlockerror', () => {
 canvas.addEventListener('click', () => {
     if (gameActive && !pointerLocked && !missionComplete) requestLock();
 });
+
+/* ═══════════════════════════════════════════════════════════════════
+   PAUSE OVERLAY
+════════════════════════════════════════════════════════════════════ */
+let pauseOverlayEl = null;
+
+function showPauseOverlay() {
+    if (!pauseOverlayEl) {
+        pauseOverlayEl = document.createElement("div");
+        pauseOverlayEl.id = "pause-overlay";
+        pauseOverlayEl.innerHTML = "<div style=\"font-family:047VT323047,monospace;font-size:48px;color:#b8c6ae;text-align:center;letter-spacing:6px;\">PAUSED</div><div style=\"font-family:047VT323047,monospace;font-size:20px;color:#8f9d89;text-align:center;margin-top:12px;\">Press ESC to Resume</div>";
+        pauseOverlayEl.style.position = "absolute";
+        pauseOverlayEl.style.inset = "0";
+        pauseOverlayEl.style.zIndex = "35";
+        pauseOverlayEl.style.display = "flex";
+        pauseOverlayEl.style.flexDirection = "column";
+        pauseOverlayEl.style.alignItems = "center";
+        pauseOverlayEl.style.justifyContent = "center";
+        pauseOverlayEl.style.background = "rgba(1,2,6,0.82)";
+        document.body.appendChild(pauseOverlayEl);
+    }
+    pauseOverlayEl.style.display = "flex";
+}
+
+function hidePauseOverlay() {
+    if (pauseOverlayEl) pauseOverlayEl.style.display = "none";
+}
 
 /* ═══════════════════════════════════════════════════════════════════
    WEB AUDIO
@@ -1150,6 +1264,12 @@ function setPromptVisible(v) {
 
 function updateHUD() {
     if (!objectiveEl) return;
+    if (playerDead) {
+        objectiveEl.textContent = 'DEAD // RESPawn TO RETRY.'; // respawn instruction
+        if (hudEl) hudEl.querySelector('#shard-count') && (hudEl.querySelector('#shard-count').textContent = 'HP: 0 / ' + PLAYER_MAX_HP);
+        return;
+    }
+    if (shardCountEl) shardCountEl.textContent = 'HP: ' + playerHP + ' / ' + PLAYER_MAX_HP;
 
     if (missionComplete) {
         objectiveEl.textContent = 'DISTRICT SECURED.';
@@ -1170,7 +1290,8 @@ function updateHUD() {
         objectiveEl.textContent = 'Explore the district. Stay alert.';
     }
 
-    if (shardCountEl) shardCountEl.style.display = 'none';
+    if (shardCountEl) shardCountEl.style.display = 'block';
+    shardCountEl.textContent = 'HP: ' + playerHP + ' / ' + PLAYER_MAX_HP;
 }
 
 function showHUD() {
@@ -1264,6 +1385,7 @@ function updateBursts(dt) {
         p.mesh.material.opacity = Math.max(0, p.life * 0.9);
         if (p.life <= 0) {
             scene.remove(p.mesh);
+            if (p.mesh && p.mesh.geometry) p.mesh.geometry.dispose();
             burstParticles.splice(i, 1);
         }
     }
@@ -1291,6 +1413,8 @@ function checkPortalTrigger() {
 ═══════════════════════════════════════════════════════════════════ */
 function updatePlayer(dt) {
     if (missionComplete) return;
+    if (playerDead) return;
+    if (gamePaused) return; // freeze physics
 
     // Clamp dt to avoid huge physics steps (e.g. tab switching)
     const safeDt = Math.min(dt, 0.1);
@@ -1404,6 +1528,7 @@ function updatePlayer(dt) {
 /* Very subtle head bob — only while grounded and moving */
 function updateCamera(dt) {
     if (!gameActive) return;
+    if (gamePaused) return; // freeze camera while paused
     camera.rotation.order = 'YXZ';
     camera.rotation.y = player.yaw;
     camera.rotation.x = player.pitch;
@@ -1439,6 +1564,7 @@ function updateCamera(dt) {
    ANIMATED OBJECTS UPDATE
 ═══════════════════════════════════════════════════════════════════ */
 function updateAnimated(time, dt) {
+    if (gamePaused) return; // freeze animated objects (shards, portal, debris, titan breathing)
 
     if (gameActive) {
         playerMesh.position.set(player.x, player.y, player.z);
@@ -1503,7 +1629,7 @@ function updateAnimated(time, dt) {
             Math.sin(time * 2.1) * (portalActive ? 0.8 : 0.1);
     }
 
-    // Burst particles
+    // Burst particles — dispose temporary geometry on expiry
     updateBursts(dt);
 
     // Debris physics
@@ -1519,6 +1645,7 @@ function updateAnimated(time, dt) {
             obj.life -= dt;
             if (obj.life <= 0 || obj.mesh.position.y < 0) {
                 scene.remove(obj.mesh);
+                if (obj.mesh && obj.mesh.geometry) obj.mesh.geometry.dispose();
                 animatedObjects.splice(i, 1);
             }
         }
@@ -1695,16 +1822,37 @@ window.restartGame = function () {
         }
     }
 
-    // Reset player
+    // Reset player — include health/death reset for respawn
     player.x = SPAWN.x; player.z = SPAWN.z;
     player.y = surfaceY(SPAWN.x, SPAWN.z);
     player.vx = 0; player.vy = 0; player.vz = 0;
     player.yaw = SPAWN.yaw; player.pitch = 0;
+    playerHP = PLAYER_MAX_HP;
+    playerDead = false;
+    invulnerableUntil = 0;
+    titanPlayerHit = false; // reset hit state for new encounter
     unstickFromSolid();
-    camera.gameInit = false;   // re-snap the follow camera on restart too
+    camera.gameInit = false;
+
+    // Reset Titan encounter — full reset so second encounter behaves
+    // identically to the first (no stale state, no duplicate mesh).
+    titanEvent.active = false;
+    titanEvent.phase = 0;
+    titanEvent.time = 0;
+    titanEvent.attackCycle = undefined;
+    titanPlayerHit = false;
+    titanTriggerTimer = 0;
+    if (titanMesh) {
+        titanMesh.visible = false;
+        titanMesh.position.set(0, 0, -28);
+        titanMesh.rotation.set(0, 0, 0);
+        titanMesh.scale.setScalar(1);
+    }
 
     missionComplete = false;
     completeEl.style.display = 'none';
+    if (hudEl) hudEl.style.display = 'block';
+    updateHUD();
 
     updateHUD();
     setPromptVisible(true);
@@ -1783,7 +1931,8 @@ const townMats = {
  * @param {string} style - 'normal', 'timber', 'stone'
  */
 function buildHouse(x, z, w, d, h, style = 'timber') {
-    const baseY = heightAt(Math.round(x), Math.round(z));
+    const baseY = heightAt(Math.round(x), Math.round(z))
+        + Math.max(-1, Math.min(1, Math.round(Math.sin(x * 0.25 + z * 0.19 + 1.7) * 1.2 + Math.cos(x * 0.12 - z * 0.15) * 0.6)));
 
     // Stone foundation layer
     for (let dx = 0; dx < w; dx++) {
@@ -1815,11 +1964,13 @@ function buildHouse(x, z, w, d, h, style = 'timber') {
             queueBlock(x + w - 1, baseY + dy, z + d - 1, townMats.timberDark, true);
         }
 
-        // Mid-wall vertical posts on front/back if wide enough
-        if (w >= 4) {
+        // Mid-wall vertical posts — visible timber frame every 2 blocks
+        if (w >= 3) {
             for (let dy = 1; dy <= h; dy++) {
-                queueBlock(x + Math.floor(w / 2), baseY + dy, z, townMats.timberBrown, true);
-                queueBlock(x + Math.floor(w / 2), baseY + dy, z + d - 1, townMats.timberBrown, true);
+                for (let px = 2; px < w - 1; px += 2) {
+                    queueBlock(x + px, baseY + dy, z, townMats.timberDark, true);
+                    queueBlock(x + px, baseY + dy, z + d - 1, townMats.timberDark, true);
+                }
             }
         }
 
@@ -1858,9 +2009,11 @@ function buildHouse(x, z, w, d, h, style = 'timber') {
         queueBlock(x + Math.floor(w / 2), baseY + 1, z, townMats.doorDark, false);
     }
 
-    // Sloped terracotta tile roof
+    // Sloped terracotta tile roof — deterministic per position so the
+    // town shows a varied but stable mix of terra/brown/orange tiles,
+    // matching the reference town's roof variety.
     const roofMats = [townMats.roofTerra, townMats.roofBrown, townMats.roofOrange];
-    const roofMat = roofMats[Math.floor(Math.random() * roofMats.length)];
+    const roofMat = roofMats[((x * 7 + z * 13) % 3 + 3) % 3];
 
     const roofH = Math.max(2, Math.floor(w / 2));
     for (let dx = -1; dx <= w; dx++) {
@@ -1969,228 +2122,126 @@ function buildTownTree(x, z, height = 4) {
 }
 
 /**
- * Build dense Shiganshina District — AOT Episode 1 reference-accurate
- * Dense medieval German town with timber-frame houses, canals, bridges, trees
+ * Build grid-based Shiganshina town — no overlapping buildings.
+ *
+ * Houses sit on a 4-unit grid (3-wide house + 1-wide street), so no two
+ * buildings ever share a block. The spawn at (-16, 0) sits on a street
+ * intersection, surrounded by houses but never inside one.
  */
 function buildShinganshina() {
-    // === MAIN RESIDENTIAL BLOCKS (dense clusters) ===
+    const gx = [-23, -19, -15, -11, -7, -3, 1, 5, 9, 13, 17, 21]; // 12 columns
+    const gz = [-19, -15, -11, -7, -3, 1, 5, 9];                 // 8 rows
+    const occ = new Set();
 
-    // Northwest block — dense housing
-    buildHouse(-22, -20, 4, 5, 3, 'timber');
-    buildHouse(-17, -21, 5, 4, 3, 'timber');
-    buildHouse(-11, -20, 4, 6, 4, 'timber'); // taller
-    buildHouse(-22, -14, 3, 4, 2, 'timber');
-    buildHouse(-18, -15, 4, 5, 3, 'timber');
-    buildHouse(-13, -14, 5, 4, 3, 'timber');
-    buildHouse(-22, -9, 4, 4, 3, 'timber');
-    buildHouse(-17, -8, 3, 5, 2, 'timber');
-    buildHouse(-12, -9, 4, 4, 3, 'timber');
+    /** Place a house; double-checks the grid so no two buildings overlap. */
+    function place(gx2, gz2, w, d, h, style = 'timber') {
+        for (let dx = 0; dx < w; dx++) {
+            for (let dz = 0; dz < d; dz++) {
+                const k = `${gx2 + dx},${gz2 + dz}`;
+                if (occ.has(k)) {
+                    throw new Error('buildShinganshina: cell ' + k + ' already occupied');
+                }
+                occ.add(k);
+            }
+        }
+        buildHouse(gx2, gz2, w, d, h, style);
+    }
 
-    // North-central block
-    buildHouse(-7, -20, 5, 5, 4, 'timber'); // landmark tall building
-    buildHouse(-1, -21, 4, 4, 3, 'timber');
-    buildHouse(4, -20, 5, 4, 3, 'timber');
-    buildHouse(-6, -15, 4, 5, 3, 'timber');
-    buildHouse(-1, -14, 3, 4, 2, 'timber');
-    buildHouse(3, -15, 4, 5, 3, 'timber');
-    buildHouse(-7, -9, 4, 4, 3, 'timber');
-    buildHouse(-2, -8, 5, 4, 3, 'timber');
-    buildHouse(3, -9, 4, 4, 2, 'timber');
+    // === Northwest residential blocks ===
+    for (const z of [-19, -15, -11, -7]) {
+        for (const x of gx) {
+            const key = `${x},${z}`;
+            if (key === '13,-19') {
+                place(x, z, 3, 3, 3); // tall house
+            } else if (key === '-23,-7') {
+                place(x, z, 3, 3, 3); // tall house
+            } else {
+                place(x, z, 3, 3, (x + z) % 2 === 0 ? 3 : 2);
+            }
+        }
+    }
 
-    // Northeast block
-    buildHouse(9, -20, 4, 5, 3, 'timber');
-    buildHouse(14, -21, 5, 4, 4, 'timber'); // taller
-    buildHouse(19, -20, 4, 4, 3, 'timber');
-    buildHouse(8, -15, 4, 4, 2, 'timber');
-    buildHouse(13, -14, 5, 5, 3, 'timber');
-    buildHouse(19, -15, 4, 4, 3, 'timber');
-    buildHouse(9, -9, 3, 5, 3, 'timber');
-    buildHouse(14, -8, 4, 4, 2, 'timber');
-    buildHouse(19, -9, 4, 4, 3, 'timber');
+    // === Main street — north side (z = -3) ===
+    for (const x of gx) {
+        const key = `${x},-3`;
+        if (key === '-23,-3') {
+            place(x, -3, 4, 4, 4); // NW corner landmark
+        } else if (key === '-15,-3') {
+            place(x, -3, 4, 4, 4); // SE corner landmark
+        } else if (key === '-3,-3') {
+            place(x, -3, 4, 4, 4); // market square
+        } else if (key === '9,-3') {
+            place(x, -3, 3, 3, 4); // district tower
+        } else {
+            place(x, -3, 3, 3, (x + -3) % 3 === 0 ? 3 : 2);
+        }
+    }
 
-    // === CANAL DISTRICT (east side) ===
-    // Main canal running north-south
-    buildCanal(16, -24, 16, 8, 2);
+    // === Main street — south side (z = 1) ===
+    for (const x of gx) {
+        const key = `${x},1`;
+        if (key === '1,1') {
+            place(x, 1, 4, 4, 4); // central hall
+        } else if (key === '5,1') {
+            place(x, 1, 4, 4, 4); // town hall
+        } else if (key === '9,1') {
+            place(x, 1, 3, 3, 5); // watchtower
+        } else if (key === '-3,1') {
+            place(x, 1, 4, 4, 4); // guildhall
+        } else {
+            place(x, 1, 3, 3, (x + 1) % 3 === 0 ? 3 : 2);
+        }
+    }
 
-    // Canal-side buildings
-    buildHouse(11, -18, 3, 4, 3, 'timber');
-    buildHouse(11, -13, 4, 3, 2, 'timber');
-    buildHouse(11, -8, 3, 4, 3, 'timber');
-    buildHouse(11, -3, 4, 4, 3, 'timber');
-    buildHouse(11, 2, 3, 4, 2, 'timber');
+    // === Southeast blocks ===
+    for (const z of [5, 9]) {
+        for (const x of gx) {
+            const key = `${x},${z}`;
+            if (key === '17,9') {
+                place(x, z, 3, 3, 3); // SE landmark
+            } else {
+                place(x, z, 3, 3, (x + z) % 2 === 0 ? 3 : 2);
+            }
+        }
+    }
 
-    buildHouse(19, -12, 4, 4, 3, 'timber');
-    buildHouse(19, -6, 3, 5, 2, 'timber');
-    buildHouse(19, 0, 4, 4, 3, 'timber');
-    buildHouse(19, 5, 3, 4, 2, 'timber');
+    // === Trees along streets (reference style: trees line roads) ===
+    // Main east-west streets (z = -3 and z = 1) — 5 trees each
+    for (const tz of [-3, 1]) {
+        for (const tx of [-20, -12, -4, 4, 12, 20]) {
+            buildTownTree(tx, tz, 3);
+        }
+    }
+    // North street spine (z = -7, -11) — 4 trees
+    for (const tz of [-7, -11]) {
+        for (const tx of [-16, -8, 0, 8, 16]) {
+            buildTownTree(tx, tz, 3);
+        }
+    }
 
-    // Bridges across canal
-    buildBridge(14, -18, 5, 'x');
-    buildBridge(14, -10, 5, 'x');
-    buildBridge(14, -2, 5, 'x');
-    buildBridge(14, 5, 5, 'x');
+    // === Trees along the main streets ===
+    // 15 trees on the four z-streets
+    for (const tz of [-16, -8, 4]) {
+        for (const tx of [-20, -8, 0, 8, 20]) {
+            buildTownTree(tx, tz, 4);
+        }
+    }
+    // 12 trees along the east/west spine (x = -20, 0, 20)
+    for (const tz of [-20, -12, -4, 8]) {
+        for (const tx of [-20, 0, 20]) {
+            buildTownTree(tx, tz, 3);
+        }
+    }
 
-    // === CENTRAL PLAZA/MARKET ===
-    buildHouse(-3, -4, 6, 6, 4, 'timber'); // central hall/market
-    buildHouse(-9, -2, 4, 3, 2, 'timber');
-    buildHouse(4, -3, 3, 4, 2, 'timber');
-    buildHouse(-4, 2, 3, 3, 2, 'timber');
-    buildHouse(1, 3, 4, 4, 3, 'timber');
-
-    // === SOUTH RESIDENTIAL ===
-    buildHouse(-22, 3, 4, 4, 3, 'timber');
-    buildHouse(-17, 2, 5, 5, 3, 'timber');
-    buildHouse(-11, 3, 4, 4, 2, 'timber');
-    buildHouse(-22, 8, 3, 4, 2, 'timber');
-    buildHouse(-17, 9, 4, 4, 3, 'timber');
-    buildHouse(-12, 8, 5, 4, 3, 'timber');
-
-    buildHouse(-6, 5, 4, 5, 3, 'timber');
-    buildHouse(-1, 6, 3, 4, 2, 'timber');
-    buildHouse(4, 5, 4, 4, 3, 'timber');
-    buildHouse(-7, 10, 3, 4, 2, 'timber');
-    buildHouse(-2, 11, 4, 4, 3, 'timber');
-    buildHouse(3, 10, 4, 5, 3, 'timber');
-
-    // === SMALLER INFILL BUILDINGS (density) ===
-    buildHouse(-15, -18, 3, 3, 2, 'timber');
-    buildHouse(-9, -17, 3, 3, 2, 'timber');
-    buildHouse(-3, -17, 3, 3, 2, 'timber');
-    buildHouse(2, -16, 3, 3, 2, 'timber');
-    buildHouse(7, -17, 3, 3, 2, 'timber');
-    buildHouse(12, -16, 3, 3, 2, 'timber');
-
-    buildHouse(-19, -11, 3, 3, 2, 'timber');
-    buildHouse(-14, -12, 3, 3, 2, 'timber');
-    buildHouse(-8, -11, 3, 3, 2, 'timber');
-    buildHouse(-3, -12, 3, 3, 3, 'timber');
-    buildHouse(1, -11, 3, 3, 2, 'timber');
-    buildHouse(6, -12, 3, 3, 2, 'timber');
-    buildHouse(10, -11, 3, 3, 2, 'timber');
-    buildHouse(17, -11, 3, 3, 2, 'timber');
-
-    buildHouse(-16, -5, 3, 3, 2, 'timber');
-    buildHouse(-11, -6, 3, 3, 2, 'timber');
-    buildHouse(-6, -5, 3, 3, 2, 'timber');
-    buildHouse(5, -6, 3, 3, 2, 'timber');
-    buildHouse(10, -5, 3, 3, 2, 'timber');
-
-    buildHouse(-19, 1, 3, 3, 2, 'timber');
-    buildHouse(-14, 0, 3, 3, 2, 'timber');
-    buildHouse(-8, 1, 3, 3, 2, 'timber');
-    buildHouse(7, 1, 3, 3, 2, 'timber');
-    buildHouse(12, 0, 3, 3, 2, 'timber');
-
-    buildHouse(-15, 6, 3, 3, 2, 'timber');
-    buildHouse(-9, 7, 3, 3, 2, 'timber');
-    buildHouse(8, 7, 3, 3, 2, 'timber');
-    buildHouse(13, 6, 3, 3, 2, 'timber');
-    buildHouse(17, 8, 3, 3, 2, 'timber');
-
-    // === TREES scattered throughout town ===
-    buildTownTree(-20, -17, 4);
-    buildTownTree(-13, -19, 3);
-    buildTownTree(-8, -13, 4);
-    buildTownTree(-15, -7, 3);
-    buildTownTree(-10, -2, 4);
-    buildTownTree(-18, 5, 3);
-    buildTownTree(-11, 10, 4);
-    buildTownTree(-4, 8, 3);
-    buildTownTree(2, -14, 4);
-    buildTownTree(7, -7, 3);
-    buildTownTree(1, 1, 4);
-    buildTownTree(8, 9, 3);
-    buildTownTree(15, -5, 4);
-    buildTownTree(21, 2, 3);
-    buildTownTree(18, 10, 4);
-
-    // === MAIN STREET / CENTRAL AREA ===
-    buildHouse(-3, -11, 4, 4, 4); // Taller
-    buildHouse(3, -13, 4, 5, 3);
-    buildHouse(9, -12, 5, 4, 3);
-    buildHouse(15, -11, 4, 4, 2);
-    buildHouse(20, -13, 3, 4, 3);
-
-    // === MAIN STREET / CENTRAL AREA ===
-    // Main street runs east-west around z = -6 to -2
-    buildHouse(-22, -8, 4, 4, 3);
-    buildHouse(-22, -2, 3, 4, 2);
-    buildHouse(-16, -7, 5, 4, 4); // Corner building
-    buildHouse(-10, -8, 4, 3, 3);
-    buildHouse(-10, -3, 4, 4, 2);
-
-    // East side of main street
-    buildHouse(8, -8, 5, 4, 3);
-    buildHouse(8, -2, 4, 3, 3);
-    buildHouse(14, -7, 4, 5, 4);
-    buildHouse(20, -8, 3, 4, 3);
-    buildHouse(20, -2, 4, 4, 2);
-
-    // === EAST DISTRICT ===
-    // Eastern buildings
-    buildHouse(12, -4, 3, 4, 3);
-    buildHouse(12, 2, 4, 3, 2);
-    buildHouse(22, -1, 3, 4, 3);
-    buildHouse(22, 5, 4, 3, 2);
-
-    // === SOUTH RESIDENTIAL QUARTER ===
-    buildHouse(-20, 2, 4, 4, 3);
-    buildHouse(-14, 1, 5, 5, 3);
-    buildHouse(-8, 2, 4, 4, 4); // Taller landmark
-    buildHouse(-2, 1, 5, 4, 3);
-    buildHouse(4, 2, 4, 5, 3);
-
-    buildHouse(-22, 7, 3, 4, 2);
-    buildHouse(-16, 8, 4, 4, 3);
-    buildHouse(-10, 7, 5, 5, 3);
-    buildHouse(-4, 9, 4, 4, 2);
-    buildHouse(2, 8, 4, 5, 3);
-    buildHouse(8, 7, 5, 4, 4); // Tall
-    buildHouse(14, 9, 4, 4, 3);
-
-    // === WEST QUARTER ===
-    buildHouse(-18, -5, 4, 4, 3);
-    buildHouse(-18, 1, 3, 5, 2);
-    buildHouse(-18, 7, 4, 4, 3);
-
-    // === CENTRAL LANDMARKS ===
-    // Town center / plaza area
-    buildHouse(-5, -1, 3, 3, 5); // Watchtower
-    buildHouse(0, 4, 4, 4, 4);   // Central hall
-
-    // === ADDITIONAL DENSE HOUSING ===
-    // Fill in gaps for density
-    buildHouse(-19, -15, 3, 3, 2);
-    buildHouse(-12, -16, 3, 4, 3);
-    buildHouse(-5, -15, 4, 3, 2);
-    buildHouse(1, -15, 3, 3, 3);
-    buildHouse(7, -16, 3, 4, 2);
-    buildHouse(13, -15, 4, 3, 3);
-
-    buildHouse(-17, -10, 3, 3, 2);
-    buildHouse(-7, -10, 3, 4, 3);
-    buildHouse(1, -9, 3, 3, 2);
-    buildHouse(11, -10, 3, 3, 3);
-    buildHouse(17, -9, 3, 4, 2);
-
-    buildHouse(-13, -5, 3, 3, 3);
-    buildHouse(-7, -4, 3, 4, 2);
-    buildHouse(5, -5, 3, 3, 3);
-    buildHouse(11, -4, 3, 3, 2);
-
-    buildHouse(-19, 4, 3, 3, 2);
-    buildHouse(-13, 4, 3, 4, 3);
-    buildHouse(-6, 5, 3, 3, 2);
-    buildHouse(10, 4, 3, 4, 2);
-    buildHouse(16, 5, 3, 3, 3);
-
-    buildHouse(-19, 10, 3, 3, 2);
-    buildHouse(-12, 11, 4, 3, 2);
-    buildHouse(-6, 11, 3, 3, 3);
-    buildHouse(0, 10, 3, 4, 2);
-    buildHouse(6, 11, 3, 3, 2);
-    buildHouse(11, 10, 4, 3, 3);
-    buildHouse(17, 11, 3, 3, 2);
+    // === Vertical canal and its bridges ===
+    buildCanal(-4, -20, -4, 9, 0);
+    for (const bz of [-20, -16, -12, -8, -4, 0, 4, 8]) {
+        const by = heightAt(-4, bz);
+        for (let bx = -5; bx <= -1; bx++) {
+            queueBlock(bx, by, bz, MAT.wood, true);  // planks
+            queueBlock(bx, by + 1, bz, MAT.wood, false); // rails
+        }
+    }
 }
 
 buildShinganshina();
