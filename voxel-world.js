@@ -1,3 +1,4 @@
+console.log('VOXEL-WORLD.JS STARTING');
 /**
  * voxel-world.js — SAIF.OS Voxel Game
  *
@@ -16,6 +17,7 @@
  *   • Frame-rate independence via deltaTime
  */
 
+console.log("VOXEL-WORLD IMPORT THREE SUCCESS");
 import * as THREE from "https://cdn.jsdelivr.net/npm/three@0.180.0/build/three.module.js";
 
 /* ═══════════════════════════════════════════════════════════════════
@@ -2150,26 +2152,27 @@ function buildTownTree(x, z, height = 4) {
  * intersection, surrounded by houses but never inside one.
  */
 function buildShinganshina() {
+    window.__buildShinganshina_Executed = true; console.log("BUILD SHINGANSHINA EXECUTED");
     const occ = new Set();
     function place(x,z,w,d,h,style='timber'){
         for(let dx=0;dx<w;dx++)for(let dz=0;dz<d;dz++){const k=`${x+dx},${z+dz}`;if(occ.has(k))throw new Error('buildShinganshina overlap: '+k);occ.add(k);}
         buildHouse(x,z,w,d,h,style);
     }
-    place(-23,-19,3,3,3); place(-15,-19,3,3,2);
-    place(-23,-15,3,3,3); place(-11,-15,3,3,2);
-    place(-19,-11,3,3,2); place(-13,-11,3,3,3);
-    place(-23,-3,4,4,4); place(-3,-3,4,4,4); place(9,-3,3,3,4);
-    place(-3,1,4,4,4); place(5,1,4,4,4); place(-15,1,3,3,2); place(13,-5,3,3,2);
-    place(9,5,3,3,2); place(17,5,3,3,3);
-    place(13,9,3,3,2); place(21,9,3,3,2);
+    place(-23,-19,3,3,3,'normal'); place(-15,-19,3,3,2,'normal');
+    place(-23,-15,3,3,3,'normal'); place(-11,-15,3,3,2,'normal');
+    place(-19,-11,3,3,2,'normal'); place(-13,-11,3,3,3,'normal');
+    place(-23,-3,4,4,4,'normal'); place(-3,-3,4,4,4,'normal'); place(9,-3,3,3,4,'normal');
+    place(-3,1,4,4,4,'normal'); place(5,1,4,4,4,'normal'); place(-15,1,3,3,2,'normal'); place(13,-5,3,3,2,'normal');
+    place(9,5,3,3,2,'normal'); place(17,5,3,3,3,'normal');
+    place(13,9,3,3,2,'normal'); place(21,9,3,3,2,'normal');
     buildCanal(-4,-20,-4,9,2);
     buildBridge(14,-18,5,'x'); buildBridge(14,-10,5,'x'); buildBridge(14,-2,5,'x'); buildBridge(14,3,5,'x');
     for(const tz of[-3,1,-7,5])for(const tx of[-20,-12,0,12,20])buildTownTree(tx,tz,3);
     for(const tz of[-19,-11,-3,1,9])for(const tx of[-20,0,20])buildTownTree(tx,tz,4);
-    place(-18,-5,3,3,4);
+    place(-18,-5,3,3,4,'timber');
 }
 
-buildShinganshina();
+// buildShinganshina();
 
 function isVoidBuffer(x, z) {
     return (x >= -60 && x <= 60 && z >= -79 && z <= -20);
@@ -2189,39 +2192,24 @@ function buildWall() {
     const wallMat = new THREE.MeshLambertMaterial({ color: 0x7a6e62 });
     const wallTop = new THREE.MeshLambertMaterial({ color: 0x8d8274 });
     const H = WALL.height;
+    const T = 2; // Continuous 2-block thickness
 
+    // Unified thick-wall perimeter: continuous shell eliminates corner gaps
     for (let x = WALL.xMin; x <= WALL.xMax; x++) {
-        for (let y = 0; y < H; y++) queueBlock(x, y, WALL.zMin, y === H - 1 ? wallTop : wallMat, true);
-        for (let y = 0; y < H; y++) queueBlock(x, y, WALL.zMax, y === H - 1 ? wallTop : wallMat, true);
-    }
-    for (let z = WALL.zMin; z <= WALL.zMax; z++) {
-        for (let y = 0; y < H; y++) queueBlock(WALL.xMin, y, z, y === H - 1 ? wallTop : wallMat, true);
-        for (let y = 0; y < H; y++) queueBlock(WALL.xMax, y, z, y === H - 1 ? wallTop : wallMat, true);
-    }
-
-    // Corner bastions — read as wall towers and stop the corners being thin.
-    for (const cx of [WALL.xMin, WALL.xMax]) {
-        for (const cz of [WALL.zMin, WALL.zMax]) {
-            for (let dx = -1; dx <= 1; dx++) {
-                for (let dz = -1; dz <= 1; dz++) {
-                    for (let y = 0; y < H + 4; y++) {
-                        queueBlock(cx + dx, y, cz + dz, y >= H ? wallTop : wallMat, true);
-                    }
+        for (let z = WALL.zMin; z <= WALL.zMax; z++) {
+            // Check if (x,z) is on the 2-block perimeter boundary
+            const isPerimeter = (
+                x < WALL.xMin + T || x > WALL.xMax - T ||
+                z < WALL.zMin + T || z > WALL.zMax - T
+            );
+            if (isPerimeter) {
+                for (let y = 0; y < H; y++) {
+                    queueBlock(x, y, z, y === H - 1 ? wallTop : wallMat, true);
                 }
             }
         }
     }
 
-    // Mid-wall watchtowers, Wall Maria style — taller than the curtain and
-    // solid all the way down so they also act as collision landmarks.
-    for (const tx of [-13, 0, 13]) {
-        for (let dx = -1; dx <= 1; dx++) {
-            for (let y = 0; y < H + 3; y++) {
-                queueBlock(tx + dx, y, WALL.zMin, wallMat, true);
-                queueBlock(tx + dx, y, WALL.zMax, wallMat, true);
-            }
-        }
-    }
 }
 
 /**
@@ -2236,7 +2224,7 @@ function clampToDistrict() {
     };
 }
 
-buildTerrain();
+// buildTerrain();
 
 /* ═══════════════════════════════════════════════════════════════════
    VOID BUFFER CLEANUP — remove old terrain/collision from buffer zone
@@ -2253,10 +2241,32 @@ for (let x = -60; x <= 60; x++) {
     }
 }
 
-buildWall();
+// buildWall();
 // buildTrees(); // Removed - no trees in Shiganshina
-buildPortal();
+// buildPortal();
 flushBlocks();
 
 window.setVoxelProgress(0);
 requestAnimationFrame(animate);
+
+// Minimal spawn foundation
+function buildSpawnFoundation() {
+    const mat = new THREE.MeshLambertMaterial({ color: 0x5a4a3a });
+    for (let x = -20; x <= -12; x++) {
+        for (let z = -4; z <= 4; z++) {
+            queueBlock(x, -1, z, mat, false);
+        }
+    }
+}
+buildSpawnFoundation();
+
+// Minimal spawn foundation
+function buildSpawnFoundation() {
+    const mat = new THREE.MeshLambertMaterial({ color: 0x5a4a3a });
+    for (let x = -20; x <= -12; x++) {
+        for (let z = -4; z <= 4; z++) {
+            queueBlock(x, -1, z, mat, false);
+        }
+    }
+}
+buildSpawnFoundation();
