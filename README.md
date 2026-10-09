@@ -1,60 +1,101 @@
-# SAIF.OS — A Cinematic Web-Based World
+# SAIF.OS — A Cinematic Journey Into a 3D World
 
-**SAIF.OS** is a personal, browser-based interactive experience that turns a scrolling landing page into a journey through space, toward Earth, and into a third-person voxel world inspired by *Attack on Titan*'s Shiganshina.
+**A small web experiment that turns a landing page into a journey through space and into a third-person voxel world.**
 
-Rather than presenting everything at once, the experience reveals itself in stages: begin in space, travel through a galaxy, approach Earth, and cross into the world below.
+SAIF.OS is an interactive browser experience built with HTML, CSS, JavaScript, and Three.js. Scroll through a cinematic sequence—from deep space, across a galaxy, toward Earth, and finally into a world inspired by Shiganshina from *Attack on Titan*.
 
-> **Project status:** Experimental prototype in active development. The cinematic journey and local third-person world are the core of the project; environment-building and gameplay systems are still being iterated on.
+> **Status:** Experimental prototype in active development. Screenshots below are development captures and may not reflect the current state of every scene. The Shiganshina environment is being rebuilt in stages.
 
-## The idea
+## Preview
 
-Most portfolio pages ask you to click through sections. SAIF.OS is designed as a small interactive journey:
+| SPACE | GALAXY |
+|---|---|
+| ![SAIF.OS space opening](https://raw.githubusercontent.com/mikey-eze/Intend/main/_shot_1_space.png) | ![SAIF.OS galaxy scene](https://raw.githubusercontent.com/mikey-eze/Intend/main/_shot_2_galaxy.png) |
 
-1. **SPACE** — the opening scene establishes scale and atmosphere.
-2. **GALAXY** — the view moves into a wider cosmic setting.
-3. **EARTH APPROACH** — Earth comes into focus through a staged zoom.
-4. **SHIGANSHINA WORLD** — the experience transitions into a Three.js voxel scene with third-person controls.
+| EARTH APPROACH | WORLD TRANSITION |
+|---|---|
+| ![Earth from a distance](https://raw.githubusercontent.com/mikey-eze/Intend/main/_shot_3_earth_far.png) | ![Earth close-up](https://raw.githubusercontent.com/mikey-eze/Intend/main/_shot_4_earth_near.png) |
 
-Scrolling is rate-limited to keep the sequence cinematic rather than letting one large scroll jump straight to the end. Entering the world is intended to be a one-way transition for the current session.
+![SAIF.OS world scene development capture](https://raw.githubusercontent.com/mikey-eze/Intend/main/_shot_5_world.png)
 
-## Features
+## What we're building
 
-- **Scroll-driven cinematic:** a staged SPACE → GALAXY → EARTH → WORLD progression.
-- **Earth approach sequence:** a dedicated approach phase before world entry.
-- **3D voxel world:** a browser-rendered scene powered by Three.js.
-- **Third-person controls:** movement, sprinting, jumping, and mouse camera.
-- **Attack on Titan-inspired direction:** Shiganshina as the setting, with an Eren-inspired player concept, companion characters, and a Colossal Titan event planned as part of the experience.
-- **No framework-heavy app shell:** built primarily with HTML, CSS, and JavaScript.
+The goal is to make the page feel like a continuous, playable journey instead of a conventional portfolio.
 
-The project is being developed incrementally. Details of the world, character behavior, collision, and cinematic events may change as the prototype evolves.
+1. **SPACE** — begin with a quiet, atmospheric view of space.
+2. **GALAXY** — travel into a wider cosmic scene.
+3. **EARTH APPROACH** — zoom toward Earth in a distinct cinematic stage.
+4. **SHIGANSHINA WORLD** — transition into a browser-rendered 3D voxel environment.
+
+The world is inspired by the architecture and atmosphere of Shiganshina. The longer-term direction includes a dense town, a massive outer wall, environmental details, third-person exploration, companion characters, and a Colossal Titan event. These elements are a work in progress, not a claim that every feature is complete.
+
+## Current features
+
+- Scroll-driven, multi-stage cinematic sequence.
+- Rate-limited scrolling to help prevent skipping through the journey.
+- Dedicated Earth approach before the world transition.
+- Three.js-powered 3D scene.
+- Third-person movement, sprinting, jumping, and mouse camera controls.
+- Primarily plain HTML, CSS, and JavaScript—without a large frontend framework.
 
 ## Run locally
 
-Because the project loads JavaScript ES modules, open it through a local HTTP server instead of double-clicking `index.html` as a `file://` URL. Direct file loading can cause browser module/CORS errors.
+You need **Node.js or Python** for a local server, plus an internet connection for the Three.js module currently loaded from jsDelivr.
 
-### Option A: Python
+### 1. Get the project
 
-From the project directory, run:
+Clone the repository:
+
+```bash
+git clone https://github.com/mikey-eze/Intend.git
+cd Intend
+```
+
+Or download the ZIP from GitHub and extract it.
+
+### 2. Start a local web server
+
+**Option A — Python (simple and recommended if Python is installed):**
 
 ```bash
 python -m http.server 8123
 ```
 
-Then open:
+On Windows, if `python` isn't recognized, try:
+
+```cmd
+py -m http.server 8123
+```
+
+**Option B — Node.js:**
+
+If you have Node.js installed, you can use this command:
+
+```bash
+npx serve .
+```
+
+Follow the local URL printed by the command.
+
+**Option C — VS Code Live Server:**
+
+1. Open the extracted `Intend` folder in VS Code.
+2. Install the **Live Server** extension if needed.
+3. Right-click `index.html` and choose **Open with Live Server**.
+
+### 3. Open the experience
+
+For the Python server, visit:
 
 **http://127.0.0.1:8123/index.html**
 
-Keep the terminal running while testing.
+Keep the terminal running while using the page. Stop the server with `Ctrl + C`.
 
-### Option B: VS Code Live Server
-
-Open the project folder in VS Code, start the Live Server extension on `index.html`, and use the local HTTP URL it provides.
-
-Three.js is loaded as an ES module from jsDelivr, so the browser needs an internet connection for that dependency unless you change the project to serve it locally.
+**Important:** Don't open `index.html` by double-clicking it. The project uses JavaScript modules, which can fail to load correctly from a `file://` URL.
 
 ## Controls
 
-Once the 3D world is active:
+After the world becomes active:
 
 | Input | Action |
 |---|---|
@@ -65,47 +106,41 @@ Once the 3D world is active:
 | Click inside the game | Capture the mouse |
 | `Esc` | Release the mouse |
 
-Controls become relevant after the cinematic transitions into the game.
+## Project map
 
-## Project structure
-
-| File or folder | Purpose |
+| Path | Purpose |
 |---|---|
-| `index.html` | Main page and scene markup |
-| `style.css` | Page styling and cinematic presentation |
-| `script.js` | Scroll journey and page interaction |
-| `voxel-world.js` | Three.js world, player, and world-side gameplay logic |
-| `assets/` | Visual assets used by the experience |
-| `inspo/` | Visual references for world-building |
+| `index.html` | Main page markup |
+| `style.css` | Layout and visual styling |
+| `script.js` | Scroll journey and page interactions |
+| `voxel-world.js` | Three.js scene, player, and world-side logic |
+| `assets/` | Images and other visual assets |
+| `inspo/` | Environment reference images |
 
-The repository also includes diagnostic scripts and captured screenshots from development. These are useful for debugging, but are not required to understand the main experience.
-
-## Development principles
-
-- **Build in stages.** Keep the cinematic journey stable while iterating on the 3D environment.
-- **Prefer small, verifiable changes.** Avoid rewriting working systems to fix a local issue.
-- **Test over HTTP.** Module loading should be checked from a local web server, not a `file://` page.
-- **Be honest about prototype status.** Screenshots and successful syntax checks are not substitutes for testing the actual in-browser experience.
+The repository also contains development diagnostics and captured screenshots from debugging. Those files document the build process; they aren't all required to run the experience.
 
 ## Roadmap
 
-- [ ] Rebuild the Shiganshina environment in deliberate stages, starting from a clean foundation.
-- [ ] Establish terrain, scale, and a readable Wall Maria silhouette.
-- [ ] Add a coherent town layout, roads, houses, and environmental detail.
-- [ ] Refine collision and safe player spawn placement.
-- [ ] Improve the timing and visual clarity of the Colossal Titan event.
-- [ ] Capture current, representative screenshots of each stage of the journey.
-- [ ] Separate temporary diagnostics from the main source files.
+- [ ] Rebuild the Shiganshina environment from a clean foundation.
+- [ ] Establish terrain scale and a clear Wall Maria silhouette.
+- [ ] Create a coherent town layout with streets and buildings.
+- [ ] Add water, bridges, trees, and environmental details.
+- [ ] Refine the spawn point, collision, and exploration feel.
+- [ ] Polish the Titan event and cinematic timing.
+- [ ] Replace older development captures with fresh screenshots as the world evolves.
+- [ ] Separate temporary debugging artifacts from the core source files.
 
-Roadmap items are goals, not claims that the work is already finished.
+## Development approach
 
-## Inspiration and credits
+The project is built in small stages so the working cinematic journey can be preserved while the world is improved. Changes should be tested through a local HTTP server, and browser behavior should be verified separately from syntax checks.
 
-SAIF.OS is an independent, fan-inspired experiment drawing visual inspiration from *Attack on Titan* and its Shiganshina setting. It is not an official game or affiliated with the rights holders.
+## Credits
 
-- [Three.js](https://threejs.org/) — 3D rendering library
-- [jsDelivr](https://www.jsdelivr.com/) — CDN used for the Three.js module
+- [Three.js](https://threejs.org/) — 3D rendering
+- [jsDelivr](https://www.jsdelivr.com/) — CDN for the current Three.js module
+
+SAIF.OS is an independent fan-inspired project. It is not affiliated with or endorsed by the creators or rights holders of *Attack on Titan*.
 
 ## License
 
-No license has been specified yet. Until a license is added, assume that standard copyright applies to this repository and that reuse is not automatically granted.
+No license has been added yet. Until one is chosen, standard copyright applies and reuse is not automatically permitted.
